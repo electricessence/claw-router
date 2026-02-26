@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{header, StatusCode},
     response::IntoResponse,
     routing::get,
     Json, Router,
@@ -21,11 +21,18 @@ use crate::{backends::BackendClient, router::RouterState};
 /// Build the admin-facing axum router (port 8081).
 pub fn router(state: Arc<RouterState>) -> Router {
     Router::new()
+        .route("/", get(dashboard))
         .route("/admin/health", get(health))
         .route("/admin/traffic", get(traffic))
         .route("/admin/config", get(config))
         .route("/admin/backends/health", get(backends_health))
         .with_state(state)
+}
+
+/// GET / — admin dashboard (single-page UI)
+pub async fn dashboard() -> impl IntoResponse {
+    const HTML: &str = include_str!("admin_ui.html");
+    (StatusCode::OK, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], HTML)
 }
 
 /// GET /admin/health — checks liveness + optional backend probes

@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>claw-router</title>
+<style>
+  :root {
+    --bg:        #0f1117;
+    --surface:   #1a1d27;
+    --border:    #2a2d3a;
+    --text:      #e2e8f0;
+    --muted:     #64748b;
+    --green:     #22c55e;
+    --orange:    #f97316;
+    --red:       #ef4444;
+    --blue:      #3b82f6;
+    --purple:    #a78bfa;
+    --mono:      "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    --sans:      Inter, system-ui, -apple-system, sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  /* ── Layout ── */
+  #app { display: flex; flex-direction: column; height: 100vh; }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 0 20px; height: 52px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    position: sticky; top: 0; z-index: 10;
+  }
+  main { flex: 1; overflow-y: auto; padding: 20px; }
+
+  /* ── Header ── */
+  .logo { font-family: var(--mono); font-weight: 700; font-size: 15px; letter-spacing: -.3px; }
+  .logo span { color: var(--purple); }
+  .status-pill {
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border-radius: 999px;
+    font-size: 12px; font-weight: 600;
+    background: color-mix(in srgb, var(--green) 15%, transparent);
+    color: var(--green); border: 1px solid color-mix(in srgb, var(--green) 40%, transparent);
+  }
+  .status-pill.err { background: color-mix(in srgb, var(--red) 15%, transparent); color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .pulse { animation: pulse 2s ease infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .spacer { flex: 1; }
+  #last-updated { color: var(--muted); font-size: 12px; }
+
+  /* ── Section headings ── */
+  .section-title {
+    font-size: 11px; font-weight: 700; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--muted);
+    margin-bottom: 12px;
+  }
+
+  /* ── Backend cards ── */
+  #backends { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-bottom: 28px; }
+  .backend-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 8px;
+    transition: border-color .15s;
+  }
+  .backend-card:hover { border-color: var(--muted); }
+  .backend-card-row { display: flex; align-items: center; gap: 8px; }
+  .backend-name { font-family: var(--mono); font-size: 13px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .provider-badge {
+    font-family: var(--mono); font-size: 10px; font-weight: 700;
+    padding: 2px 7px; border-radius: 4px; letter-spacing: .04em;
+    background: color-mix(in srgb, var(--purple) 15%, transparent);
+    color: var(--purple); border: 1px solid color-mix(in srgb, var(--purple) 30%, transparent);
+  }
+  .provider-badge.openai   { --c: #10b981; }
+  .provider-badge.openrouter { --c: #f59e0b; }
+  .provider-badge.ollama   { --c: #38bdf8; }
+  .provider-badge.anthropic { --c: #a78bfa; }
+  .provider-badge[class*="openai"], .provider-badge[class*="openrouter"],
+  .provider-badge[class*="ollama"], .provider-badge[class*="anthropic"] {
+    background: color-mix(in srgb, var(--c) 15%, transparent);
+    color: var(--c); border-color: color-mix(in srgb, var(--c) 30%, transparent);
+  }
+  .health-dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .health-dot.ok  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .health-dot.err { background: var(--red);   box-shadow: 0 0 6px var(--red); }
+  .health-dot.unk { background: var(--muted); }
+  .backend-url { font-family: var(--mono); font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ── Stats strip ── */
+  #stats {
+    display: flex; gap: 16px; flex-wrap: wrap;
+    margin-bottom: 20px;
+  }
+  .stat-chip {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 16px;
+    display: flex; flex-direction: column; gap: 2px; min-width: 110px;
+  }
+  .stat-label { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+  .stat-value { font-family: var(--mono); font-size: 20px; font-weight: 700; }
+  .stat-value.green { color: var(--green); }
+  .stat-value.orange { color: var(--orange); }
+  .stat-value.red { color: var(--red); }
+
+  /* ── Traffic table ── */
+  #traffic-wrap {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; overflow: hidden;
+  }
+  .table-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  #traffic-table { width: 100%; border-collapse: collapse; }
+  #traffic-table th {
+    text-align: left; padding: 8px 14px;
+    font-size: 11px; font-weight: 700; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .06em;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--bg) 40%, transparent);
+  }
+  #traffic-table td {
+    padding: 9px 14px;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+    font-size: 13px;
+  }
+  #traffic-table tr:last-child td { border-bottom: none; }
+  #traffic-table tr.ok:hover   td { background: color-mix(in srgb, var(--green) 4%, transparent); }
+  #traffic-table tr.esc:hover  td { background: color-mix(in srgb, var(--orange) 4%, transparent); }
+  #traffic-table tr.err:hover  td { background: color-mix(in srgb, var(--red) 4%, transparent); }
+  .mono { font-family: var(--mono); }
+  .tag {
+    display: inline-flex; align-items: center;
+    padding: 1px 7px; border-radius: 4px;
+    font-family: var(--mono); font-size: 11px; font-weight: 600;
+  }
+  .tag.ok  { background: color-mix(in srgb, var(--green)  15%, transparent); color: var(--green); }
+  .tag.esc { background: color-mix(in srgb, var(--orange) 15%, transparent); color: var(--orange); }
+  .tag.err { background: color-mix(in srgb, var(--red)    15%, transparent); color: var(--red); }
+  .tag.dis { background: color-mix(in srgb, var(--blue)   15%, transparent); color: var(--blue); }
+  .empty-row td { text-align: center; color: var(--muted); padding: 32px; }
+
+  /* ── Config panel ── */
+  #config-overlay {
+    display: none; position: fixed; inset: 0; z-index: 20;
+    background: rgba(0,0,0,.5); backdrop-filter: blur(2px);
+  }
+  #config-overlay.open { display: block; }
+  #config-drawer {
+    position: fixed; right: 0; top: 0; bottom: 0; width: min(560px, 95vw);
+    background: var(--surface); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; z-index: 21;
+    transform: translateX(100%); transition: transform .2s ease;
+  }
+  #config-overlay.open #config-drawer { transform: none; }
+  .drawer-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px; border-bottom: 1px solid var(--border);
+    font-weight: 700; font-size: 15px;
+  }
+  #config-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 20px; line-height: 1; }
+  #config-close:hover { color: var(--text); }
+  #config-content {
+    flex: 1; overflow-y: auto; padding: 20px;
+    font-family: var(--mono); font-size: 12px; line-height: 1.7;
+    white-space: pre-wrap; color: var(--text);
+  }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+  /* ── Buttons ── */
+  .btn {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); padding: 5px 12px; border-radius: 6px;
+    cursor: pointer; font-size: 12px; font-weight: 600;
+    transition: border-color .1s, background .1s;
+  }
+  .btn:hover { border-color: var(--muted); background: color-mix(in srgb, var(--border) 60%, transparent); }
+  .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .btn.primary:hover { background: color-mix(in srgb, var(--blue) 85%, #000); }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">claw<span>-router</span></div>
+    <div class="status-pill" id="gw-status">
+      <div class="dot pulse"></div>
+      <span>connecting</span>
+    </div>
+    <div class="spacer"></div>
+    <span id="last-updated"></span>
+    <button class="btn" onclick="openConfig()">Config</button>
+  </header>
+
+  <main>
+    <div class="section-title">Backends</div>
+    <div id="backends"><!-- injected --></div>
+
+    <div id="stats">
+      <div class="stat-chip">
+        <div class="stat-label">Total</div>
+        <div class="stat-value" id="s-total">—</div>
+      </div>
+      <div class="stat-chip">
+        <div class="stat-label">Errors</div>
+        <div class="stat-value" id="s-errors">—</div>
+      </div>
+      <div class="stat-chip">
+        <div class="stat-label">Avg latency</div>
+        <div class="stat-value" id="s-latency">—</div>
+      </div>
+      <div class="stat-chip">
+        <div class="stat-label">Escalations</div>
+        <div class="stat-value" id="s-escalations">—</div>
+      </div>
+    </div>
+
+    <div id="traffic-wrap">
+      <div class="table-header">
+        <div class="section-title" style="margin:0">Traffic</div>
+        <div style="font-size:11px;color:var(--muted)" id="traffic-count"></div>
+      </div>
+      <table id="traffic-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Profile</th>
+            <th>Model → Tier</th>
+            <th>Mode</th>
+            <th>Latency</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="traffic-body">
+          <tr class="empty-row"><td colspan="6">Loading traffic…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<!-- Config drawer -->
+<div id="config-overlay" onclick="maybeClose(event)">
+  <div id="config-drawer">
+    <div class="drawer-header">
+      <span>Running config</span>
+      <button id="config-close" onclick="closeConfig()">×</button>
+    </div>
+    <pre id="config-content">Loading…</pre>
+  </div>
+</div>
+
+<script>
+const BASE = '';
+let configLoaded = false;
+
+// ── Fetch helpers ────────────────────────────────────────────────────────────
+
+async function get(path) {
+  const r = await fetch(BASE + path);
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return r.json();
+}
+
+function fmt(ms) {
+  if (ms == null) return '—';
+  return ms < 1000 ? `${ms}ms` : `${(ms/1000).toFixed(1)}s`;
+}
+
+function relTime(isoStr) {
+  if (!isoStr) return '—';
+  const d = new Date(isoStr);
+  const s = Math.round((Date.now() - d) / 1000);
+  if (s < 60)  return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s/60)}m ago`;
+  return d.toLocaleTimeString();
+}
+
+// ── Health ───────────────────────────────────────────────────────────────────
+
+async function refreshHealth() {
+  try {
+    const h = await get('/admin/health');
+    const pill = document.getElementById('gw-status');
+    pill.className = 'status-pill';
+    pill.innerHTML = '<div class="dot"></div><span>online</span>';
+  } catch {
+    const pill = document.getElementById('gw-status');
+    pill.className = 'status-pill err';
+    pill.innerHTML = '<div class="dot"></div><span>offline</span>';
+  }
+}
+
+// ── Backends ─────────────────────────────────────────────────────────────────
+
+async function refreshConfig() {
+  const data = await get('/admin/config');
+  const backends = data.backends || [];
+
+  document.getElementById('backends').innerHTML = backends.map(b => {
+    const provider = b.provider || 'openai';
+    return `
+      <div class="backend-card">
+        <div class="backend-card-row">
+          <div class="backend-name">${esc(b.name)}</div>
+          <span class="provider-badge ${provider}">${provider}</span>
+          <span class="health-dot unk" id="hd-${esc(b.name)}" title="Checking…"></span>
+        </div>
+        <div class="backend-url">${esc(b.base_url)}</div>
+      </div>`;
+  }).join('');
+
+  // Probe backend health
+  try {
+    const bh = await get('/admin/backends/health');
+    (bh.backends || []).forEach(b => {
+      const dot = document.getElementById('hd-' + b.backend);
+      if (dot) {
+        dot.className = 'health-dot ' + (b.status === 'ok' ? 'ok' : 'err');
+        dot.title = b.status === 'ok' ? 'reachable' : (b.error || 'unreachable');
+      }
+    });
+  } catch(_) {}
+}
+
+// ── Traffic ──────────────────────────────────────────────────────────────────
+
+async function refreshTraffic() {
+  const data = await get('/admin/traffic?limit=50');
+  const stats = data.stats || {};
+  const entries = data.entries || [];
+
+  document.getElementById('s-total').textContent       = stats.total_requests ?? '—';
+  document.getElementById('s-errors').textContent      = stats.error_count ?? '0';
+  document.getElementById('s-latency').textContent     = fmt(stats.avg_latency_ms);
+  document.getElementById('s-escalations').textContent = stats.escalation_count ?? '0';
+
+  const errPct = stats.total_requests > 0 ? ((stats.error_count||0)/stats.total_requests*100).toFixed(1) : null;
+  const errEl = document.getElementById('s-errors');
+  errEl.className = 'stat-value ' + (errPct > 5 ? 'red' : errPct > 1 ? 'orange' : 'green');
+
+  document.getElementById('traffic-count').textContent = `${entries.length} recent`;
+
+  const tbody = document.getElementById('traffic-body');
+  if (!entries.length) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="6">No traffic yet</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = entries.map(e => {
+    const rowClass = e.error ? 'err' : (e.escalated ? 'esc' : 'ok');
+    const tag = e.error ? `<span class="tag err">error</span>`
+              : e.escalated ? `<span class="tag esc">escalated</span>`
+              : `<span class="tag ok">ok</span>`;
+    const modeTag = e.routing_mode
+      ? `<span class="tag ${e.routing_mode === 'dispatch' ? 'dis' : 'esc'}">${e.routing_mode}</span>` : '—';
+    const modelTo = e.requested_model
+      ? `<span class="mono">${esc(e.requested_model)}</span>${e.routed_tier ? ` → <span class="mono">${esc(e.routed_tier)}</span>` : ''}`
+      : '—';
+
+    return `<tr class="${rowClass}">
+      <td class="mono" style="color:var(--muted);white-space:nowrap">${relTime(e.timestamp)}</td>
+      <td class="mono">${esc(e.profile || 'default')}</td>
+      <td>${modelTo}</td>
+      <td>${modeTag}</td>
+      <td class="mono">${fmt(e.latency_ms)}</td>
+      <td>${tag}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Config drawer ────────────────────────────────────────────────────────────
+
+async function openConfig() {
+  document.getElementById('config-overlay').classList.add('open');
+  if (!configLoaded) {
+    try {
+      const c = await get('/admin/config');
+      document.getElementById('config-content').textContent = JSON.stringify(c, null, 2);
+      configLoaded = true;
+    } catch(e) {
+      document.getElementById('config-content').textContent = 'Error: ' + e.message;
+    }
+  }
+}
+
+function closeConfig() {
+  document.getElementById('config-overlay').classList.remove('open');
+}
+
+function maybeClose(e) {
+  if (e.target === document.getElementById('config-overlay')) closeConfig();
+}
+
+// ── Utils ────────────────────────────────────────────────────────────────────
+
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Poll loop ────────────────────────────────────────────────────────────────
+
+async function tick() {
+  await Promise.allSettled([refreshHealth(), refreshTraffic()]);
+  document.getElementById('last-updated').textContent =
+    'Updated ' + new Date().toLocaleTimeString();
+}
+
+// Initial load
+(async () => {
+  try { await refreshConfig(); } catch(_) {}
+  tick();
+  setInterval(tick, 4000);
+})();
+</script>
+</body>
+</html>
