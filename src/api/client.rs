@@ -1,4 +1,4 @@
-//! Client-facing API (port 8080) — the endpoint ZeroClaw agents talk to.
+//! Client-facing API (port 8080) — the endpoint Claw agents talk to.
 //!
 //! This is intentionally a thin layer: all routing logic lives in [`crate::router`].
 //! Handlers translate HTTP concerns (status codes, JSON bodies) into calls

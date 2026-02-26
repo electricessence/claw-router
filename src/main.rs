@@ -45,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
     // Build router state
     let state = Arc::new(router::RouterState::new(Arc::clone(&config), Arc::clone(&traffic_log)));
 
-    // Bind client API (ZeroClaw-facing)
+    // Bind client API (agent-facing)
     let client_addr: SocketAddr = format!("0.0.0.0:{}", config.gateway.client_port).parse()?;
 
     // Bind admin API

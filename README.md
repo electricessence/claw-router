@@ -1,13 +1,13 @@
 # claw-router
 
-A lightweight, opinionated LLM routing gateway written in Rust, built for the ZeroClaw ecosystem.
+A lightweight, opinionated LLM routing gateway written in Rust, built for Claw deployments.
 
 ## What it does
 
-claw-router sits between ZeroClaw agents and LLM backends, intelligently routing requests across a tier ladder — from fast/cheap local models up to cloud expert models — based on configurable profiles.
+claw-router sits between Claw agents and LLM backends, intelligently routing requests across a tier ladder — from fast/cheap local models up to cloud expert models — based on configurable profiles.
 
 ```
-ZeroClaw agent  →  claw-router :8080  →  Ollama (local)
+Claw agent  →  claw-router :8080  →  Ollama (local)
                                       →  OpenRouter (cloud)
                                       →  Any OpenAI-compatible API
 ```
@@ -47,7 +47,7 @@ docker run --rm \
 
 ## API
 
-### Client API (port 8080) — ZeroClaw-compatible
+### Client API (port 8080)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -83,9 +83,9 @@ Key concepts:
 - **Aliases** — short names like `hint:fast` that resolve to a tier
 - **Profiles** — routing behaviour (mode, classifier tier, cost ceiling, expert gate)
 
-## ZeroClaw integration
+## Claw integration
 
-In your ZeroClaw `config.toml`, point the session's model route at claw-router:
+In your Claw agent config, point the model route at claw-router:
 
 ```toml
 [[model_routes]]
