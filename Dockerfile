@@ -1,7 +1,7 @@
 # lm-gateway-rs — multi-stage Rust build
 #
 # Builder: alpine:3 + rustup — fully controlled, patchable base.
-#          Compiles to a fully static musl binary via the appropriate target.
+#          Compiles to a fully static musl binary (x86_64-unknown-linux-musl).
 #          reqwest uses rustls — no OpenSSL, no C TLS dependency.
 #
 # Runtime: scratch — empty image, zero CVEs, nothing to scan.
@@ -9,66 +9,49 @@
 #
 # Build args:
 #   CARGO_BUILD_JOBS=2    — cap parallelism for low-RAM hosts
-#   TARGETARCH            — set automatically by `docker buildx` (amd64 / arm64)
 #
-# Usage (single-arch):
+# Usage:
 #   docker build --memory=3g --build-arg CARGO_BUILD_JOBS=2 -t lm-gateway .
-#
-# Usage (multi-arch via buildx):
-#   docker buildx build --platform linux/amd64,linux/arm64 \
-#     --memory=3g --build-arg CARGO_BUILD_JOBS=2 \
-#     -t ghcr.io/<owner>/lm-gateway-rs:latest --push .
 
 FROM alpine:3 AS builder
 
 ARG CARGO_BUILD_JOBS=2
-ARG TARGETARCH=amd64
-
-# Map Docker platform arch → Rust musl target triple
-RUN case "${TARGETARCH}" in \
-      amd64) echo "x86_64-unknown-linux-musl"  > /rust_target ;; \
-      arm64) echo "aarch64-unknown-linux-musl" > /rust_target ;; \
-      *) echo "Unsupported TARGETARCH: ${TARGETARCH}" && exit 1 ;; \
-    esac
 
 # Patch all Alpine packages, then add build deps.
 # musl-dev: static linking target
 # curl: rustup installer
+# gcc: C compiler for ring and other crates with C code
 RUN apk upgrade --no-cache \
     && apk add --no-cache curl musl-dev gcc
 
-# Install Rust via rustup (pinned version, target determined above)
-# CC_*_unknown_linux_musl: Alpine's native gcc IS the musl compiler.
+# Install Rust via rustup.
+# CC_x86_64_unknown_linux_musl: Alpine's native gcc IS the musl compiler.
 # ring/cc-rs looks for "x86_64-linux-musl-gcc" by name — this redirects it.
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH \
-    CC_x86_64_unknown_linux_musl=gcc \
-    CC_aarch64_unknown_linux_musl=gcc
-RUN RUST_TARGET=$(cat /rust_target) \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    CC_x86_64_unknown_linux_musl=gcc
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
        | sh -s -- -y --no-modify-path --profile minimal \
            --default-toolchain 1.85.0 \
-           --target "${RUST_TARGET}"
+           --target x86_64-unknown-linux-musl
 
 WORKDIR /build
 
 # Cache dependencies separately from source
 COPY Cargo.toml Cargo.lock ./
-RUN RUST_TARGET=$(cat /rust_target) \
-    && mkdir -p src && echo 'fn main() {}' > src/main.rs \
+RUN mkdir -p src && echo 'fn main() {}' > src/main.rs \
     && cargo build --release --jobs ${CARGO_BUILD_JOBS} \
         --no-default-features --features rustls-tls \
-        --target "${RUST_TARGET}" \
-    && rm -rf src "target/${RUST_TARGET}/release/.fingerprint/lm-gateway-"*
+        --target x86_64-unknown-linux-musl \
+    && rm -rf src target/x86_64-unknown-linux-musl/release/.fingerprint/lm-gateway-*
 
 # Build real source
 COPY src ./src
-RUN RUST_TARGET=$(cat /rust_target) \
-    && cargo build --release --jobs ${CARGO_BUILD_JOBS} \
+RUN cargo build --release --jobs ${CARGO_BUILD_JOBS} \
         --no-default-features --features rustls-tls \
-        --target "${RUST_TARGET}" \
-    && cp "target/${RUST_TARGET}/release/lm-gateway" /lm-gateway
+        --target x86_64-unknown-linux-musl \
+    && cp target/x86_64-unknown-linux-musl/release/lm-gateway /lm-gateway
 
 # Minimal passwd file so the binary can run as a named non-root user
 RUN echo "gateway:x:65534:65534:gateway:/:/sbin/nologin" > /tmp/passwd
