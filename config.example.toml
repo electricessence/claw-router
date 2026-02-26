@@ -1,4 +1,4 @@
-# claw-router example configuration
+# lm-gateway example configuration
 # Copy to config.toml and adjust values for your environment.
 # NEVER put secret values directly in this file — use api_key_env to name an env var.
 

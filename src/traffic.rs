@@ -68,6 +68,9 @@ impl TrafficLog {
             entries.iter().map(|e| e.latency_ms as f64).sum::<f64>() / total as f64
         };
 
+        let error_count = entries.iter().filter(|e| !e.success).count();
+        let escalation_count = entries.iter().filter(|e| e.escalated).count();
+
         let mut tier_counts: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
         for entry in entries.iter() {
@@ -76,6 +79,8 @@ impl TrafficLog {
 
         TrafficStats {
             total_requests: total,
+            error_count,
+            escalation_count,
             avg_latency_ms,
             tier_counts,
         }
@@ -89,14 +94,24 @@ pub struct TrafficEntry {
     pub id: String,
     /// Timestamp of the request.
     pub timestamp: DateTime<Utc>,
-    /// Tier that handled this request.
+    /// Active profile at the time of the request.
+    pub profile: Option<String>,
+    /// Original model alias or tier name from the request body.
+    pub requested_model: Option<String>,
+    /// Tier that ultimately handled this request.
     pub tier: String,
     /// Backend that handled this request.
     pub backend: String,
+    /// Routing mode applied (`"dispatch"` or `"escalate"`).
+    pub routing_mode: Option<String>,
+    /// Whether the request was escalated to a higher tier during routing.
+    pub escalated: bool,
     /// End-to-end latency in milliseconds.
     pub latency_ms: u64,
     /// Whether the backend returned a success response.
     pub success: bool,
+    /// Error description when `success` is `false`.
+    pub error: Option<String>,
 }
 
 impl TrafficEntry {
@@ -104,11 +119,46 @@ impl TrafficEntry {
         Self {
             id: Uuid::new_v4().to_string(),
             timestamp: Utc::now(),
+            profile: None,
+            requested_model: None,
             tier,
             backend,
+            routing_mode: None,
+            escalated: false,
             latency_ms,
             success,
+            error: None,
         }
+    }
+
+    /// Attach the active profile name.
+    pub fn with_profile(mut self, profile: &str) -> Self {
+        self.profile = Some(profile.to_string());
+        self
+    }
+
+    /// Attach the original model hint from the request.
+    pub fn with_requested_model(mut self, model: &str) -> Self {
+        self.requested_model = Some(model.to_string());
+        self
+    }
+
+    /// Attach the routing mode string (`"dispatch"` or `"escalate"`).
+    pub fn with_routing_mode(mut self, mode: &str) -> Self {
+        self.routing_mode = Some(mode.to_string());
+        self
+    }
+
+    /// Mark this entry as having been escalated to a higher tier.
+    pub fn mark_escalated(mut self) -> Self {
+        self.escalated = true;
+        self
+    }
+
+    /// Attach an error description for failed requests.
+    pub fn with_error(mut self, err: &str) -> Self {
+        self.error = Some(err.to_string());
+        self
     }
 }
 
@@ -116,6 +166,10 @@ impl TrafficEntry {
 #[derive(Debug, Serialize)]
 pub struct TrafficStats {
     pub total_requests: usize,
+    /// Number of requests that returned an error.
+    pub error_count: usize,
+    /// Number of requests that were escalated to a higher tier.
+    pub escalation_count: usize,
     pub avg_latency_ms: f64,
     pub tier_counts: std::collections::HashMap<String, usize>,
 }

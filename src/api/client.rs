@@ -1,4 +1,4 @@
-//! Client-facing API (port 8080) — the endpoint Claw agents talk to.
+//! Client-facing API (port 8080) — the endpoint clients and agents talk to.
 //!
 //! This is intentionally a thin layer: all routing logic lives in [`crate::router`].
 //! Handlers translate HTTP concerns (status codes, JSON bodies) into calls
@@ -39,7 +39,7 @@ pub async fn chat_completions(
 
 /// `GET /v1/models` — list available tiers and aliases as model objects.
 ///
-/// Returns an OpenAI-compatible model list so ZeroClaw can enumerate what
+/// Returns an OpenAI-compatible model list so clients can enumerate what
 /// routing targets are available without any out-of-band config.
 pub async fn list_models(State(state): State<Arc<RouterState>>) -> impl IntoResponse {
     let tiers = state.config.tiers.iter().map(|t| {
@@ -55,7 +55,7 @@ pub async fn list_models(State(state): State<Arc<RouterState>>) -> impl IntoResp
             "id": alias,
             "object": "model",
             "owned_by": "alias",
-            "claw_router": { "resolves_to": target },
+            "lm_gateway": { "resolves_to": target },
         })
     });
 
@@ -213,7 +213,7 @@ mod tests {
         let alias_entry = data.iter().find(|v| v["id"] == "hint:fast");
         assert!(alias_entry.is_some(), "alias hint:fast not in model list");
         assert_eq!(alias_entry.unwrap()["owned_by"], "alias");
-        assert!(alias_entry.unwrap()["claw_router"]["resolves_to"].is_string());
+        assert!(alias_entry.unwrap()["lm_gateway"]["resolves_to"].is_string());
     }
 
     // -----------------------------------------------------------------------

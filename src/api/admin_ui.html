@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>claw-router</title>
+<title>lm-gateway</title>
 <style>
   :root {
     --bg:        #0f1117;
@@ -201,7 +201,7 @@
 <body>
 <div id="app">
   <header>
-    <div class="logo">claw<span>-router</span></div>
+    <div class="logo">lm<span>-gateway</span></div>
     <div class="status-pill" id="gw-status">
       <div class="dot pulse"></div>
       <span>connecting</span>
@@ -284,6 +284,18 @@ async function get(path) {
 function fmt(ms) {
   if (ms == null) return '—';
   return ms < 1000 ? `${ms}ms` : `${(ms/1000).toFixed(1)}s`;
+}
+
+function fmtLatency(ms) {
+  if (ms == null) return '<span style="color:var(--muted)">—</span>';
+  const label = ms < 1000 ? `${ms}ms` : `${(ms/1000).toFixed(1)}s`;
+  const color = ms < 500 ? 'var(--green)' : ms < 2000 ? 'var(--orange)' : 'var(--red)';
+  return `<span class="mono" style="color:${color}">${label}</span>`;
+}
+
+function stripHint(model) {
+  if (!model) return null;
+  return model.startsWith('hint:') ? model.slice(5) : model;
 }
 
 function relTime(isoStr) {
@@ -371,21 +383,25 @@ async function refreshTraffic() {
 
   tbody.innerHTML = entries.map(e => {
     const rowClass = e.error ? 'err' : (e.escalated ? 'esc' : 'ok');
-    const tag = e.error ? `<span class="tag err">error</span>`
-              : e.escalated ? `<span class="tag esc">escalated</span>`
-              : `<span class="tag ok">ok</span>`;
+    const tag = e.error
+      ? `<span class="tag err" title="${esc(e.error)}">error</span>`
+      : e.escalated
+        ? `<span class="tag esc">escalated</span>`
+        : `<span class="tag ok">ok</span>`;
     const modeTag = e.routing_mode
       ? `<span class="tag ${e.routing_mode === 'dispatch' ? 'dis' : 'esc'}">${e.routing_mode}</span>` : '—';
-    const modelTo = e.requested_model
-      ? `<span class="mono">${esc(e.requested_model)}</span>${e.routed_tier ? ` → <span class="mono">${esc(e.routed_tier)}</span>` : ''}`
-      : '—';
+    const hint  = stripHint(e.requested_model);
+    const tier  = e.tier;
+    const modelTo = hint
+      ? `<span class="mono">${esc(hint)}</span> → <span class="mono">${esc(tier)}</span>`
+      : `<span class="mono">${esc(tier)}</span>`;
 
     return `<tr class="${rowClass}">
       <td class="mono" style="color:var(--muted);white-space:nowrap">${relTime(e.timestamp)}</td>
       <td class="mono">${esc(e.profile || 'default')}</td>
       <td>${modelTo}</td>
       <td>${modeTag}</td>
-      <td class="mono">${fmt(e.latency_ms)}</td>
+      <td>${fmtLatency(e.latency_ms)}</td>
       <td>${tag}</td>
     </tr>`;
   }).join('');

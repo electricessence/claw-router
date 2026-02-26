@@ -202,7 +202,7 @@ mod tests {
                     "mock".into(),
                     BackendConfig {
                         base_url: base_url.into(),
-                        api_key_env: Some("CLAW_ADMIN_TEST_KEY".into()), // deliberately unset
+                        api_key_env: Some("LMG_ADMIN_TEST_KEY".into()), // deliberately unset
                         timeout_ms: 5_000,
                     },
                 );
@@ -336,7 +336,7 @@ mod tests {
 
         // The env var *name* is shown, but no resolved secret value
         let b = &backends[0];
-        assert_eq!(b["api_key_env"], "CLAW_ADMIN_TEST_KEY");
+        assert_eq!(b["api_key_env"], "LMG_ADMIN_TEST_KEY");
         assert!(b.get("api_key").is_none(), "raw api_key must not be in response");
     }
 

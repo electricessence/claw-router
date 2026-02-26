@@ -134,7 +134,7 @@ mod tests {
         // A missing env var is tolerated for non-Anthropic providers; the key is omitted.
         let cfg = BackendConfig {
             base_url: "http://localhost:11434".into(),
-            api_key_env: Some("CLAW_TEST_DEFINITELY_NOT_SET_XYZ_99".into()),
+            api_key_env: Some("LMG_TEST_DEFINITELY_NOT_SET_XYZ_99".into()),
             timeout_ms: 5_000,
             provider: Provider::OpenAI,
         };
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn new_resolves_api_key_from_env_var() {
         // Use a unique var name to avoid cross-test interference.
-        let var = "CLAW_BACKEND_TEST_KEY_RESOLVE_123";
+        let var = "LMG_BACKEND_TEST_KEY_RESOLVE_123";
         // SAFETY: single-threaded test setup; env mutation is acceptable here.
         unsafe { std::env::set_var(var, "sk-test-resolved") };
         let cfg = BackendConfig {

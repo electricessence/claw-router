@@ -1,4 +1,4 @@
-//! Request routing logic — the brain of claw-router.
+//! Request routing logic — the brain of lm-gateway.
 //!
 //! Two routing modes are supported:
 //!
@@ -87,14 +87,28 @@ pub async fn route(
 
     tracing::Span::current().record("tier", target_tier.name.as_str());
 
-    match profile.mode {
+    let (response, entry) = match profile.mode {
         RoutingMode::Dispatch => {
-            dispatch(state, &mut request_body, target_tier, stream).await
+            dispatch(state, &mut request_body, target_tier, stream).await?
         }
         RoutingMode::Escalate => {
-            escalate(state, &mut request_body, profile, stream).await
+            escalate(state, &mut request_body, profile, stream).await?
         }
-    }
+    };
+
+    // Enrich entry with request-level context only available at route() scope,
+    // then record it in the traffic log.
+    let entry = entry
+        .with_profile(profile_name)
+        .with_requested_model(&model_hint)
+        .with_routing_mode(match profile.mode {
+            RoutingMode::Dispatch => "dispatch",
+            RoutingMode::Escalate => "escalate",
+        });
+
+    state.traffic.push(entry.clone());
+
+    Ok((response, entry))
 }
 
 /// Mode A: classify up-front and dispatch directly to the resolved tier.
@@ -127,7 +141,6 @@ async fn dispatch(
     let latency_ms = t0.elapsed().as_millis() as u64;
 
     let entry = TrafficEntry::new(tier.name.clone(), tier.backend.clone(), latency_ms, true);
-    state.traffic.push(entry.clone());
 
     Ok((response, entry))
 }
@@ -153,7 +166,7 @@ async fn escalate(
 
     let candidates: Vec<&TierConfig> = state.config.tiers[..=max_idx].iter().collect();
 
-    for tier in &candidates {
+    for (tier_idx, tier) in candidates.iter().enumerate() {
         let backend_cfg = match state.config.backends.get(&tier.backend) {
             Some(b) => b,
             None => continue,
@@ -177,9 +190,11 @@ async fn escalate(
             Ok(response) => {
                 let latency_ms = t0.elapsed().as_millis() as u64;
                 if is_sufficient(&response) {
-                    let entry =
+                    let mut entry =
                         TrafficEntry::new(tier.name.clone(), tier.backend.clone(), latency_ms, true);
-                    state.traffic.push(entry.clone());
+                    if tier_idx > 0 {
+                        entry = entry.mark_escalated();
+                    }
                     return Ok((response, entry));
                 }
                 debug!(tier = %tier.name, "response insufficient — escalating");

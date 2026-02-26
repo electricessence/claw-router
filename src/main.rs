@@ -21,14 +21,14 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "claw_router=info,tower_http=warn".into()),
+                .unwrap_or_else(|_| "lm_gateway=info,tower_http=warn".into()),
         )
         .init();
 
     // Load config
-    let config_path = std::env::var("CLAW_ROUTER_CONFIG")
+    let config_path = std::env::var("LMG_CONFIG")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/etc/claw-router/config.toml"));
+        .unwrap_or_else(|_| PathBuf::from("/etc/lm-gateway/config.toml"));
 
     let config = Config::load(&config_path)
         .with_context(|| format!("Failed to load config from {}", config_path.display()))?;
@@ -36,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
     info!(
         client_port = config.gateway.client_port,
         admin_port = config.gateway.admin_port,
-        "claw-router starting"
+        "lm-gateway starting"
     );
 
     let traffic_log = Arc::new(TrafficLog::new(config.gateway.traffic_log_capacity));

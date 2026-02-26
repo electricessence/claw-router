@@ -1,11 +1,11 @@
-# claw-router — multi-stage Rust build
+# lm-gateway — multi-stage Rust build
 # Apply mold linker fix per docs/gotchas.md (OOM + speed)
 #
 # Build args:
 #   CARGO_BUILD_JOBS=2    — cap parallelism for low-RAM hosts (5.8 GB)
 #
 # Usage:
-#   docker build --memory=3g --build-arg CARGO_BUILD_JOBS=2 -t claw-router .
+#   docker build --memory=3g --build-arg CARGO_BUILD_JOBS=2 -t lm-gateway .
 
 FROM rust:1.85-slim-bookworm AS builder
 
@@ -30,7 +30,7 @@ RUN mkdir -p .cargo && printf '[target.x86_64-unknown-linux-gnu]\nlinker = "clan
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src && echo 'fn main() {}' > src/main.rs \
     && cargo build --release --jobs ${CARGO_BUILD_JOBS} 2>&1 \
-    && rm -rf src target/release/.fingerprint/claw-router-*
+    && rm -rf src target/release/.fingerprint/lm-gateway-*
 
 # Build real source
 COPY src ./src
@@ -44,16 +44,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -r -s /bin/false claw
-USER claw
+RUN useradd -r -s /bin/false gateway
+USER gateway
 
-COPY --from=builder /build/target/release/claw-router /usr/local/bin/claw-router
+COPY --from=builder /build/target/release/lm-gateway /usr/local/bin/lm-gateway
 
-ENV CLAW_ROUTER_CONFIG=/etc/claw-router/config.toml
+ENV LMG_CONFIG=/etc/lm-gateway/config.toml
 
 EXPOSE 8080 8081
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD wget -qO- http://localhost:8080/healthz > /dev/null || exit 1
 
-ENTRYPOINT ["/usr/local/bin/claw-router"]
+ENTRYPOINT ["/usr/local/bin/lm-gateway"]

@@ -1,4 +1,4 @@
-//! Configuration types for claw-router.
+//! Configuration types for lm-gateway.
 //!
 //! Config is loaded once at startup from a TOML file and validated before the
 //! server opens any ports. Invalid configs are rejected with a clear error
@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 
 /// Which API protocol a backend speaks.
 ///
-/// claw-router normalises all inter-agent traffic to OpenAI's chat-completions
+/// lm-gateway normalises all inter-agent traffic to OpenAI's chat-completions
 /// schema; each [`Provider`] variant maps to an adapter that handles any
 /// necessary request/response translation at the edge.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
@@ -81,7 +81,7 @@ pub struct Config {
 
     /// Model/alias → tier name mappings.
     ///
-    /// Claw agents send `model = "hint:fast"` — this maps it to the `local:fast` tier.
+    /// Clients send `model = "hint:fast"` — this maps it to the `local:fast` tier.
     #[serde(default)]
     pub aliases: HashMap<String, String>,
 

@@ -1,7 +1,7 @@
 //! Anthropic Messages API adapter.
 //!
 //! Translates between the OpenAI chat completions schema (used internally by
-//! claw-router) and Anthropic's [`/v1/messages`](https://docs.anthropic.com/en/api/messages)
+//! lm-gateway) and Anthropic's [`/v1/messages`](https://docs.anthropic.com/en/api/messages)
 //! API. Callers route requests as normal OpenAI-format JSON; this adapter
 //! handles the schema differences transparently.
 //!

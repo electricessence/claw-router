@@ -1,53 +1,95 @@
-# claw-router
+# LM Gateway
 
-A lightweight, opinionated LLM routing gateway written in Rust, built for Claw deployments.
+> **Ultra-lightweight LLM routing gateway written in Rust.**  
+> Single binary. No Python. No database. No bloat.
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
+
+---
 
 ## What it does
 
-claw-router sits between Claw agents and LLM backends, intelligently routing requests across a tier ladder — from fast/cheap local models up to cloud expert models — based on configurable profiles.
+LM Gateway sits between your application and your LLM backends, providing a unified OpenAI-compatible interface across any number of local or cloud models. It handles credential management, tier-based routing, and intelligent escalation — so your application stays simple.
 
 ```
-Claw agent  →  claw-router :8080  →  Ollama (local)
-                                      →  OpenRouter (cloud)
-                                      →  Any OpenAI-compatible API
+Your App / Agent
+       │
+       ▼  POST /v1/chat/completions  (OpenAI-compat)
+ ┌─────────────┐
+ │  lm-gateway  │  :8080 (client)  :8081 (admin)
+ └──────┬──────┘
+        │
+        ├──▶  Ollama  (local, free)
+        ├──▶  Anthropic  (direct)
+        ├──▶  OpenRouter  (cloud)
+        └──▶  Any OpenAI-compatible API
 ```
 
-## Routing modes
+---
 
-| Mode | Strategy | Latency | Cost |
-|------|----------|---------|------|
-| **Dispatch** | Pre-classify intent with a fast model, route to the right tier immediately | +200–800ms | Predictable |
-| **Escalate** | Try cheapest tier first; evaluate response; escalate if insufficient | Lower average | Variable |
+## Why not LiteLLM?
 
-## Default tier ladder
+LiteLLM is the most common answer to this problem. It has 100+ provider integrations and a large community. It is also:
 
-```
-local:fast  →  local:capable  →  cloud:economy  →  cloud:standard  →  cloud:expert
-```
+- **Python** — large runtime, complex dependency tree, slow cold start
+- **Database-backed** — requires SQLite or Postgres for anything beyond basic routing
+- **Drifting SaaS-ward** — the Enterprise tier adds cost and cloud surface you don't need
 
-Each tier maps to a backend+model pair. Tiers are fully configurable.
+LM Gateway is the alternative when you want something that:
+
+- Ships as a **single static binary** (`docker run` and done)
+- Has **zero external runtime dependencies**
+- Fits on a **Raspberry Pi or a $5 VPS**
+- Can be **audited in an afternoon** (< 2 000 lines of Rust)
+- Is **100% self-hosted** with no telemetry, no cloud account required
+
+---
+
+## Features
+
+- **OpenAI-compatible API** — drop-in replacement endpoint for any client that speaks `/v1/chat/completions`
+- **Tier ladder** — define a cheapest→best progression of models, from local Ollama to cloud experts
+- **Two routing modes:**
+  - **Dispatch** — classify intent with a fast local model, forward to the right tier immediately (predictable latency)
+  - **Escalate** — try cheapest tier first; evaluate response quality; escalate only if needed (lowest average cost)
+- **Centralised credential management** — backends reference env vars; clients need no API keys
+- **Live admin UI** — dark dashboard at `:8081` with real-time traffic log, backend health, and config view
+- **In-memory traffic log** — ring-buffer; zero disk I/O, bounded memory, works on read-only filesystems
+
+---
 
 ## Quick start
 
 ```bash
-# Copy and edit the example config
+# 1. Copy and edit the example config
 cp config.example.toml config.toml
 $EDITOR config.toml
 
-# Set secrets via environment variables (never in config file)
+# 2. Set secrets via environment variables (never in the config file)
 export OPENROUTER_KEY="sk-or-..."
 
-# Run (Docker)
+# 3. Run
 docker run --rm \
-  -v $(pwd)/config.toml:/etc/claw-router/config.toml:ro \
+  -v $(pwd)/config.toml:/etc/lm-gateway/config.toml:ro \
   -e OPENROUTER_KEY \
   -p 8080:8080 -p 8081:8081 \
-  claw-router:latest
+  lm-gateway:latest
 ```
 
-## API
+Then send a request:
 
-### Client API (port 8080)
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"hint:fast","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+Open the admin UI: `http://localhost:8081/`
+
+---
+
+## Client API (port 8080)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -64,36 +106,52 @@ Use any tier name or alias as the `model` field:
 }
 ```
 
-### Admin API (port 8081)
+Built-in aliases: `hint:fast`, `hint:cheap`, `hint:local`, `hint:cloud`, `hint:standard`, `hint:expert`
+
+---
+
+## Admin API (port 8081)
 
 | Method | Path | Description |
 |--------|------|-------------|
+| `GET` | `/` | Admin dashboard (web UI) |
 | `GET` | `/admin/health` | Gateway health + tier/backend counts |
 | `GET` | `/admin/traffic?limit=N` | Recent N requests + aggregate stats |
-| `GET` | `/admin/config` | Current config (secrets redacted) |
+| `GET` | `/admin/config` | Running config (secrets redacted) |
 | `GET` | `/admin/backends/health` | Probe all configured backends |
+
+---
 
 ## Configuration
 
-See [config.example.toml](config.example.toml) for a fully annotated example.
+See [config.example.toml](config.example.toml) for a fully annotated example. A typical setup is under 50 lines.
 
-Key concepts:
-- **Backends** — named LLM providers with a base URL and optional secret env var
-- **Tiers** — named (backend, model) pairs in cheapest→best order
-- **Aliases** — short names like `hint:fast` that resolve to a tier
-- **Profiles** — routing behaviour (mode, classifier tier, cost ceiling, expert gate)
+**Key concepts:**
 
-## Claw integration
+| Concept | What it is |
+|---------|-----------|
+| **Backend** | A named LLM provider — base URL + optional secret env var |
+| **Tier** | A named (backend, model) pair in cheapest→best order |
+| **Alias** | Short name like `hint:fast` that resolves to a tier |
+| **Profile** | Routing behaviour: mode, classifier tier, cost ceiling |
 
-In your Claw agent config, point the model route at claw-router:
+**Environment variable for config path:**
 
-```toml
-[[model_routes]]
-match = { sender_id = 123456789 }
-provider = "openai_compatible"
-base_url = "http://claw-router:8080/v1"
-model = "hint:fast"   # or any alias/tier name
 ```
+LMG_CONFIG=/path/to/config.toml   # default: /etc/lm-gateway/config.toml
+```
+
+---
+
+## Use cases
+
+- **Homelab / private LLM deployments** — route between local Ollama and cloud fallback
+- **AI agent clusters** — serve multiple agents through a single credential-holding gateway
+  - Works as-is with [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) and any OpenAI-compatible agent framework
+- **Cost optimisation** — escalate to expensive cloud models only when local models can't answer
+- **Development environments** — keep all API keys in one place, share across projects
+
+---
 
 ## Building
 
@@ -101,31 +159,48 @@ model = "hint:fast"   # or any alias/tier name
 # Development
 cargo build
 
-# Production (cap RAM for low-memory hosts)
-docker build --memory=3g --build-arg CARGO_BUILD_JOBS=2 -t claw-router .
+# Production Docker image (cap RAM for low-memory hosts)
+docker build --memory=3g --build-arg CARGO_BUILD_JOBS=2 -t lm-gateway .
 ```
+
+The release binary is statically linked and has no runtime dependencies beyond libc.
+
+---
 
 ## Project layout
 
 ```
-claw-router/
-├── Cargo.toml
-├── Dockerfile
-├── config.example.toml
-└── src/
-    ├── main.rs          # Startup, dual listeners, shutdown
-    ├── config.rs        # Config types, TOML loading, validation
-    ├── router.rs        # Routing logic (dispatch + escalate)
-    ├── traffic.rs       # In-memory traffic ring buffer
-    ├── backends/
-    │   └── mod.rs       # HTTP client wrapper for LLM backends
-    └── api/
-        ├── mod.rs
-        ├── health.rs    # GET /healthz
-        ├── client.rs    # POST /v1/chat/completions, GET /v1/models
-        └── admin.rs     # Admin endpoints
+src/
+├── main.rs          Startup, dual listeners, graceful shutdown
+├── config.rs        Config types, TOML loading, validation
+├── router.rs        Routing logic (dispatch + escalate modes)
+├── traffic.rs       In-memory ring-buffer traffic log
+├── error.rs         Unified error type
+├── backends/
+│   ├── mod.rs       BackendClient enum dispatcher
+│   ├── openai.rs    OpenAI / OpenAI-compatible passthrough
+│   ├── ollama.rs    Ollama adapter (keyless)
+│   └── anthropic.rs Anthropic schema translation
+└── api/
+    ├── mod.rs       Router assembly
+    ├── health.rs    GET /healthz
+    ├── client.rs    POST /v1/chat/completions, GET /v1/models
+    ├── admin.rs     Admin endpoints
+    └── admin_ui.html Single-page admin dashboard
 ```
 
-## Status
+---
 
-Early scaffold — not yet production-ready. Core routing logic and API layer are functional; streaming support, web UI, and hot-reload are planned.
+## Design principles
+
+- **One job** — route LLM traffic. Nothing else.
+- **No magic** — config is a single TOML file; behaviour is deterministic and auditable.
+- **Small surface** — no database, no agent, no scheduler. A process that starts fast and uses < 10 MB RAM at idle.
+- **Transparent** — config endpoint redacts secrets; traffic log captures routing decisions.
+- **Upstream-friendly** — clean Rust, idiomatic error handling, documented public API surface.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
