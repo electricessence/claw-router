@@ -26,6 +26,7 @@ use crate::router::RouterState;
 /// ```json
 /// {
 ///   "status": "ok",
+///   "ready": true,
 ///   "uptime_secs": 3600,
 ///   "requests": {
 ///     "total": 1024,
@@ -36,6 +37,11 @@ use crate::router::RouterState;
 ///   }
 /// }
 /// ```
+///
+/// `ready` is `false` when one or more backends have `api_key_env` configured
+/// but the environment variable is not set or is empty. No backend names are
+/// exposed — only the boolean. When `ready: false` a `setup_url` field is
+/// included pointing to the setup documentation.
 pub async fn status(State(state): State<Arc<RouterState>>) -> impl IntoResponse {
     let uptime_secs = state.started_at.elapsed().as_secs();
     let stats = state.traffic.public_stats().await;
@@ -45,8 +51,22 @@ pub async fn status(State(state): State<Arc<RouterState>>) -> impl IntoResponse 
         stats.error_count as f64 / stats.total_requests as f64
     };
 
-    Json(json!({
+    // Count backends that require a key but don't have one resolved.
+    // We expose the count, not the names, to avoid leaking config detail.
+    let unconfigured = state
+        .config
+        .backends
+        .values()
+        .filter(|b| {
+            b.api_key_env.is_some()
+                && b.api_key().map(|k| k.is_empty()).unwrap_or(true)
+        })
+        .count();
+    let ready = unconfigured == 0;
+
+    let mut body = json!({
         "status": "ok",
+        "ready": ready,
         "uptime_secs": uptime_secs,
         "requests": {
             "total": stats.total_requests,
@@ -55,7 +75,17 @@ pub async fn status(State(state): State<Arc<RouterState>>) -> impl IntoResponse 
             "escalations": stats.escalation_count,
             "avg_latency_ms": stats.avg_latency_ms,
         }
-    }))
+    });
+
+    if !ready {
+        body["setup_url"] =
+            serde_json::Value::String(
+                "https://github.com/electricessence/lm-gateway-rs/blob/main/docs/setup.md"
+                    .to_string(),
+            );
+    }
+
+    Json(body)
 }
 
 #[cfg(test)]
@@ -122,6 +152,8 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
         assert_eq!(json["status"], "ok");
+        assert_eq!(json["ready"], true);
+        assert!(json.get("setup_url").is_none(), "setup_url must not appear when ready");
         assert_eq!(json["requests"]["total"], 0);
         assert_eq!(json["requests"]["errors"], 0);
         assert_eq!(json["requests"]["error_rate"], 0.0);
@@ -147,6 +179,7 @@ mod tests {
 
         assert_eq!(json["requests"]["total"], 3);
         assert_eq!(json["requests"]["errors"], 2);
+        assert_eq!(json["ready"], true);
         // 2/3 ≈ 0.666…
         let rate = json["requests"]["error_rate"].as_f64().unwrap();
         assert!((rate - 2.0 / 3.0).abs() < 1e-9);
@@ -171,5 +204,55 @@ mod tests {
         // Must not contain any tier/backend name strings
         assert!(!body.contains("local:fast"), "tier name must not appear in /status");
         assert!(!body.contains("mock"), "backend name must not appear in /status");
+    }
+
+    #[tokio::test]
+    async fn status_ready_false_when_backend_api_key_missing() {
+        // Build a config with one backend that requires a key that is not set in env.
+        let env_var = "LMG_TEST_STATUS_FAKE_KEY_99XYZ";
+        std::env::remove_var(env_var); // ensure it is absent
+
+        let mut backends = std::collections::HashMap::new();
+        backends.insert(
+            "cloud:missing".into(),
+            crate::config::BackendConfig {
+                base_url: "https://api.example.com".into(),
+                api_key_env: Some(env_var.into()),
+                timeout_ms: 30_000,
+                provider: crate::config::Provider::OpenAI,
+            },
+        );
+        let config = crate::config::Config {
+            log_capacity: 100,
+            backends,
+            tiers: vec![],
+            aliases: std::collections::HashMap::new(),
+            profiles: std::collections::HashMap::new(),
+        };
+        let state = Arc::new(RouterState::new(
+            Arc::new(config),
+            Arc::new(TrafficLog::new(100)),
+        ));
+
+        let app = crate::api::client::router(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(json["ready"], false, "ready must be false when a required API key is absent");
+        assert!(
+            json["setup_url"].as_str().is_some(),
+            "setup_url must be present when ready is false"
+        );
+        assert!(
+            json["setup_url"].as_str().unwrap().contains("setup.md"),
+            "setup_url must point to setup.md"
+        );
     }
 }
