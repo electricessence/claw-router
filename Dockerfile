@@ -35,7 +35,7 @@ RUN case "${TARGETARCH}" in \
 # musl-dev: static linking target
 # curl: rustup installer
 RUN apk upgrade --no-cache \
-    && apk add --no-cache curl musl-dev
+    && apk add --no-cache curl musl-dev gcc
 
 # Install Rust via rustup (pinned version, target determined above)
 ENV RUSTUP_HOME=/usr/local/rustup \
