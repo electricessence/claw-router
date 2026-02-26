@@ -12,9 +12,10 @@ FROM rust:1.82-slim-bookworm AS builder
 ARG CARGO_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 
-# System deps: mold linker (fast + low-RAM), SSL for reqwest (rustls-tls so no openssl), pkg-config
+# System deps: mold linker (fast + low-RAM), clang (for mold integration), SSL certs
 RUN apt-get update && apt-get install -y --no-install-recommends \
     mold \
+    clang \
     ca-certificates \
     libssl-dev \
     pkg-config \
