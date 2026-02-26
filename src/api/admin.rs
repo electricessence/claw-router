@@ -5,6 +5,9 @@
 //! from the internal Docker network, never exposed to the internet).
 
 use std::sync::Arc;
+
+use axum::{
+    extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::get,
