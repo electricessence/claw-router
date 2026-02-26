@@ -38,9 +38,13 @@ RUN apk upgrade --no-cache \
     && apk add --no-cache curl musl-dev gcc
 
 # Install Rust via rustup (pinned version, target determined above)
+# CC_*_unknown_linux_musl: Alpine's native gcc IS the musl compiler.
+# ring/cc-rs looks for "x86_64-linux-musl-gcc" by name — this redirects it.
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
-    PATH=/usr/local/cargo/bin:$PATH
+    PATH=/usr/local/cargo/bin:$PATH \
+    CC_x86_64_unknown_linux_musl=gcc \
+    CC_aarch64_unknown_linux_musl=gcc
 RUN RUST_TARGET=$(cat /rust_target) \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
        | sh -s -- -y --no-modify-path --profile minimal \
