@@ -156,3 +156,242 @@ pub async fn backends_health(State(state): State<Arc<RouterState>>) -> impl Into
 
     (status, Json(json!({ "backends": results })))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+    };
+    use serde_json::json;
+    use tower::ServiceExt; // oneshot
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::{
+        config::{BackendConfig, Config, GatewayConfig, ProfileConfig, RoutingMode, TierConfig},
+        router::RouterState,
+        traffic::{TrafficEntry, TrafficLog},
+    };
+
+    // -----------------------------------------------------------------------
+    // Test helpers
+    // -----------------------------------------------------------------------
+
+    fn state_with_backend(base_url: &str) -> Arc<RouterState> {
+        let config = Config {
+            gateway: GatewayConfig {
+                client_port: 8080,
+                admin_port: 8081,
+                traffic_log_capacity: 100,
+                log_level: None,
+            },
+            backends: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    "mock".into(),
+                    BackendConfig {
+                        base_url: base_url.into(),
+                        api_key_env: Some("CLAW_ADMIN_TEST_KEY".into()), // deliberately unset
+                        timeout_ms: 5_000,
+                    },
+                );
+                m
+            },
+            tiers: vec![
+                TierConfig {
+                    name: "local:fast".into(),
+                    backend: "mock".into(),
+                    model: "fast-model".into(),
+                },
+            ],
+            aliases: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("hint:fast".into(), "local:fast".into());
+                m
+            },
+            profiles: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    "default".into(),
+                    ProfileConfig {
+                        mode: RoutingMode::Escalate,
+                        classifier: "local:fast".into(),
+                        max_auto_tier: "local:fast".into(),
+                        expert_requires_flag: false,
+                    },
+                );
+                m
+            },
+        };
+        Arc::new(RouterState::new(
+            Arc::new(config),
+            Arc::new(TrafficLog::new(100)),
+        ))
+    }
+
+    fn minimal_state() -> Arc<RouterState> {
+        state_with_backend("http://127.0.0.1:0")
+    }
+
+    async fn body_json(body: Body) -> serde_json::Value {
+        let bytes = to_bytes(body, usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    // -----------------------------------------------------------------------
+    // GET /admin/health
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn health_returns_ok_with_tier_and_backend_counts() {
+        let app = super::router(minimal_state());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/health")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["tiers"], 1);
+        assert_eq!(json["backends"], 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // GET /admin/traffic
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn traffic_returns_stats_and_empty_entries_list_on_fresh_log() {
+        let app = super::router(minimal_state());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/traffic?limit=10")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["stats"]["total_requests"], 0);
+        assert!(json["entries"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn traffic_returns_pushed_entries_newest_first() {
+        let state = minimal_state();
+        state.traffic.push(TrafficEntry::new("local:fast".into(), "mock".into(), 50, true));
+        state.traffic.push(TrafficEntry::new("cloud:economy".into(), "mock".into(), 150, true));
+
+        let app = super::router(Arc::clone(&state));
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/traffic?limit=10")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let json = body_json(resp.into_body()).await;
+        let entries = json["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        // Newest first — cloud:economy was pushed last
+        assert_eq!(entries[0]["tier"], "cloud:economy");
+        assert_eq!(entries[1]["tier"], "local:fast");
+    }
+
+    // -----------------------------------------------------------------------
+    // GET /admin/config
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn config_redacts_api_key_value_and_shows_env_var_name() {
+        let app = super::router(minimal_state());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/config")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        let backends = json["backends"].as_array().unwrap();
+        assert_eq!(backends.len(), 1);
+
+        // The env var *name* is shown, but no resolved secret value
+        let b = &backends[0];
+        assert_eq!(b["api_key_env"], "CLAW_ADMIN_TEST_KEY");
+        assert!(b.get("api_key").is_none(), "raw api_key must not be in response");
+    }
+
+    #[tokio::test]
+    async fn config_serializes_routing_mode_using_display_not_debug() {
+        let app = super::router(minimal_state());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/config")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let json = body_json(resp.into_body()).await;
+
+        // RoutingMode::Escalate.to_string() == "escalate" (not "Escalate" from Debug)
+        let mode = &json["profiles"]["default"]["mode"];
+        assert_eq!(mode, "escalate", "mode should use Display impl: {mode}");
+    }
+
+    // -----------------------------------------------------------------------
+    // GET /admin/backends/health
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn backends_health_returns_200_all_ok_when_backends_respond() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "object": "list", "data": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let app = super::router(state_with_backend(&server.uri()));
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/backends/health")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp.into_body()).await;
+        let backends = json["backends"].as_array().unwrap();
+        assert_eq!(backends[0]["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn backends_health_returns_multi_status_when_any_backend_is_down() {
+        // Port 1 is reserved and never responds
+        let app = super::router(state_with_backend("http://127.0.0.1:1"));
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/backends/health")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::MULTI_STATUS);
+        let json = body_json(resp.into_body()).await;
+        let backends = json["backends"].as_array().unwrap();
+        assert_eq!(backends[0]["status"], "unreachable");
+    }
+}

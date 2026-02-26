@@ -290,4 +290,208 @@ mod tests {
         assert!(!is_sufficient(&json!({})));
         assert!(!is_sufficient(&json!({ "choices": [] })));
     }
+
+    // -----------------------------------------------------------------------
+    // route() — dispatch and escalate with mock backends
+    // -----------------------------------------------------------------------
+
+    use std::sync::Arc;
+
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::{
+        config::{BackendConfig, GatewayConfig, ProfileConfig, RoutingMode, TierConfig},
+        traffic::TrafficLog,
+    };
+
+    async fn mock_state(server: &MockServer, mode: RoutingMode) -> RouterState {
+        let config = crate::config::Config {
+            gateway: GatewayConfig {
+                client_port: 8080,
+                admin_port: 8081,
+                traffic_log_capacity: 100,
+                log_level: None,
+            },
+            backends: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    "mock".into(),
+                    BackendConfig {
+                        base_url: server.uri(),
+                        api_key_env: None,
+                        timeout_ms: 5_000,
+                    },
+                );
+                m
+            },
+            tiers: vec![
+                TierConfig {
+                    name: "local:fast".into(),
+                    backend: "mock".into(),
+                    model: "fast-model".into(),
+                },
+                TierConfig {
+                    name: "cloud:economy".into(),
+                    backend: "mock".into(),
+                    model: "economy-model".into(),
+                },
+            ],
+            aliases: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("hint:fast".into(), "local:fast".into());
+                m
+            },
+            profiles: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    "default".into(),
+                    ProfileConfig {
+                        mode,
+                        classifier: "local:fast".into(),
+                        max_auto_tier: "cloud:economy".into(),
+                        expert_requires_flag: false,
+                    },
+                );
+                m
+            },
+        };
+        RouterState::new(Arc::new(config), Arc::new(TrafficLog::new(100)))
+    }
+
+    fn long_response(content: &str) -> serde_json::Value {
+        json!({
+            "choices": [{ "message": { "content": content } }]
+        })
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_to_resolved_tier_and_returns_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(long_response(
+                "Here is a comprehensive answer that passes the sufficiency heuristic.",
+            )))
+            .mount(&server)
+            .await;
+
+        let state = mock_state(&server, RoutingMode::Dispatch).await;
+        let body = json!({ "model": "hint:fast", "messages": [{"role": "user", "content": "hi"}] });
+
+        let result = route(&state, body, None, false).await;
+        assert!(result.is_ok(), "dispatch failed: {:?}", result.err());
+
+        let (resp, entry) = result.unwrap();
+        assert!(resp.pointer("/choices/0/message/content").is_some());
+        assert_eq!(entry.tier, "local:fast");
+        assert_eq!(entry.backend, "mock");
+        assert!(entry.success);
+    }
+
+    #[tokio::test]
+    async fn dispatch_resolves_direct_tier_name_without_alias() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(long_response(
+                "Direct tier name resolved correctly to the right backend tier.",
+            )))
+            .mount(&server)
+            .await;
+
+        let state = mock_state(&server, RoutingMode::Dispatch).await;
+        let body = json!({ "model": "cloud:economy", "messages": [] });
+
+        let (_, entry) = route(&state, body, None, false).await.unwrap();
+        assert_eq!(entry.tier, "cloud:economy");
+    }
+
+    #[tokio::test]
+    async fn escalate_returns_first_sufficient_response() {
+        let server = MockServer::start().await;
+        // First tier (local:fast) is sufficient
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(long_response(
+                "This is a sufficient answer from the cheapest tier, no need to escalate further.",
+            )))
+            .mount(&server)
+            .await;
+
+        let state = mock_state(&server, RoutingMode::Escalate).await;
+        let body = json!({ "model": "hint:fast", "messages": [] });
+
+        let (_, entry) = route(&state, body, None, false).await.unwrap();
+        // Should have stopped at the first (cheapest) tier
+        assert_eq!(entry.tier, "local:fast");
+    }
+
+    #[tokio::test]
+    async fn route_records_entry_in_traffic_log() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(long_response(
+                "Traffic log entry should be created for every successful route call.",
+            )))
+            .mount(&server)
+            .await;
+
+        let state = mock_state(&server, RoutingMode::Dispatch).await;
+        let body = json!({ "model": "local:fast", "messages": [] });
+
+        route(&state, body, None, false).await.unwrap();
+
+        let entries = state.traffic.recent(10).await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].tier, "local:fast");
+        assert!(entries[0].success);
+    }
+
+    #[tokio::test]
+    async fn route_errors_when_no_profile_is_configured() {
+        let state = RouterState::new(
+            Arc::new(crate::config::Config {
+                gateway: GatewayConfig {
+                    client_port: 8080,
+                    admin_port: 8081,
+                    traffic_log_capacity: 10,
+                    log_level: None,
+                },
+                backends: std::collections::HashMap::new(),
+                tiers: vec![],
+                aliases: std::collections::HashMap::new(),
+                profiles: std::collections::HashMap::new(), // no default
+            }),
+            Arc::new(TrafficLog::new(10)),
+        );
+
+        let result = route(&state, json!({}), None, false).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no matching profile"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_falls_back_to_classifier_tier_on_unknown_model() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(long_response(
+                "Fallback to classifier tier when model hint is unknown.",
+            )))
+            .mount(&server)
+            .await;
+
+        let state = mock_state(&server, RoutingMode::Dispatch).await;
+        // "totally:unknown" exists in neither aliases nor tiers — should fall back to classifier
+        let body = json!({ "model": "totally:unknown", "messages": [] });
+
+        let (_, entry) = route(&state, body, None, false).await.unwrap();
+        // classifier is "local:fast"
+        assert_eq!(entry.tier, "local:fast");
+    }
 }
