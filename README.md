@@ -14,8 +14,6 @@
 
 LM Gateway RS sits between your application and your LLM backends, providing a unified OpenAI-compatible interface across any number of local or cloud models. It handles credential management, tier-based routing, and intelligent escalation — so your application stays simple.
 
-![Architecture](docs/architecture.png)
-
 ---
 
 ## Why LM Gateway RS?
