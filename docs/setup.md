@@ -30,6 +30,7 @@ sudo nano /opt/stacks/lm-gateway/compose.yaml
 ```
 
 The compose file mounts two things:
+
 - `config.toml` — routing config (tiers, aliases, backends)
 - `.env` — API keys (never committed)
 
@@ -88,7 +89,7 @@ sudo nano /opt/stacks/lm-gateway/.env
 
 Contents (use only the providers you have keys for):
 
-```
+```env
 ANTHROPIC_API_KEY=sk-ant-...
 OPENROUTER_KEY=sk-or-...
 ```
@@ -165,7 +166,7 @@ See the script's header comments for prerequisites.
 ## Security Model
 
 | What | Where | Committed? |
-|------|-------|------------|
+| ---- | ----- | ---------- |
 | API keys / secrets | `.env` on server | **Never** |
 | Routing config (backends, tiers, aliases) | `config.toml` on server | Safe — no secrets |
 | Docker image | GHCR (public) | Safe — no keys baked in |
