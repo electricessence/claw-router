@@ -1,5 +1,7 @@
 # LM Gateway RS
 
+![LM Gateway RS](docs/banner.png)
+
 > **Ultra-lightweight LLM routing gateway written in Rust.**  
 > Single binary. No Python. No database. No bloat.
 
