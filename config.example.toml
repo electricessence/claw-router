@@ -3,25 +3,29 @@
 # NEVER put secret values directly in this file — use api_key_env to name an env var.
 
 [gateway]
-client_port = 8080       # ZeroClaw / client-facing API
+client_port = 8080       # agent-facing client API
 admin_port  = 8081       # Admin API + web UI
 traffic_log_capacity = 500
 log_level = "info"
 
 # ---------------------------------------------------------------------------
 # Backends — one entry per LLM provider
+# The `provider` field selects the protocol adapter (default: "openai").
 # ---------------------------------------------------------------------------
 
 [backends.ollama]
+provider    = "ollama"
 base_url    = "http://ollama:11434"
 # No api_key_env needed for local Ollama
 
 [backends.openrouter]
-base_url    = "https://openrouter.ai/api/v1"
+provider    = "openrouter"
+base_url    = "https://openrouter.ai/api"
 api_key_env = "OPENROUTER_KEY"  # resolved from environment at startup
 
-# Example: direct Anthropic key for the expert tier
+# Direct Anthropic access (bypasses OpenRouter)
 # [backends.anthropic]
+# provider    = "anthropic"
 # base_url    = "https://api.anthropic.com"
 # api_key_env = "ANTHROPIC_KEY"
 

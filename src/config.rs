@@ -31,6 +31,41 @@ use std::{collections::HashMap, path::Path};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
+/// Which API protocol a backend speaks.
+///
+/// claw-router normalises all inter-agent traffic to OpenAI's chat-completions
+/// schema; each [`Provider`] variant maps to an adapter that handles any
+/// necessary request/response translation at the edge.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    /// Standard OpenAI `/v1/chat/completions` protocol.
+    /// Also used by LM Studio, vLLM, LocalAI, and many others.
+    #[default]
+    OpenAI,
+    /// OpenRouter — OpenAI-compatible wire format.
+    /// Kept as a distinct variant so the router can inject the
+    /// `HTTP-Referer` and `X-Title` headers that OpenRouter recommends.
+    OpenRouter,
+    /// Ollama local inference server. Uses Ollama's OpenAI-compat endpoint
+    /// by default; future versions may use the native `/api/chat` path.
+    Ollama,
+    /// Anthropic Messages API (`/v1/messages`).
+    /// Request and response shapes are translated to/from the OpenAI schema.
+    Anthropic,
+}
+
+impl std::fmt::Display for Provider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::OpenAI => "openai",
+            Self::OpenRouter => "openrouter",
+            Self::Ollama => "ollama",
+            Self::Anthropic => "anthropic",
+        })
+    }
+}
+
 /// Top-level gateway configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -46,7 +81,7 @@ pub struct Config {
 
     /// Model/alias → tier name mappings.
     ///
-    /// ZeroClaw sends `model = "hint:fast"` — this maps it to the `local:fast` tier.
+    /// Claw agents send `model = "hint:fast"` — this maps it to the `local:fast` tier.
     #[serde(default)]
     pub aliases: HashMap<String, String>,
 
@@ -122,7 +157,7 @@ impl Config {
 /// Core gateway settings.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GatewayConfig {
-    /// Port for the ZeroClaw-facing API (default: 8080).
+    /// Port for the agent-facing client API (default: 8080).
     #[serde(default = "defaults::client_port")]
     pub client_port: u16,
 
@@ -154,6 +189,14 @@ pub struct BackendConfig {
     /// Request timeout in milliseconds (default: 30 000).
     #[serde(default = "defaults::timeout_ms")]
     pub timeout_ms: u64,
+
+    /// Protocol adapter to use when talking to this backend.
+    ///
+    /// Defaults to [`Provider::OpenAI`] (passthrough). Set to `"anthropic"`
+    /// for direct Anthropic API access, `"ollama"` for local Ollama, or
+    /// `"openrouter"` to enable OpenRouter-specific headers.
+    #[serde(default)]
+    pub provider: Provider,
 }
 
 impl BackendConfig {

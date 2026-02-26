@@ -1,112 +1,92 @@
-//! HTTP client wrapper for a single LLM backend.
+//! Backend client factory and unified dispatch interface.
 //!
-//! A [`BackendClient`] is built fresh per request from [`BackendConfig`] — this
-//! keeps the lifetime simple and lets each request honour the configured timeout
-//! without shared mutable state.
+//! [`BackendClient`] is an enum that wraps a concrete provider adapter chosen
+//! at construction time from [`BackendConfig::provider`]. All routing code
+//! interacts with the same two-method API (`chat_completions`, `health_check`);
+//! adapter-specific protocol differences — schema translation, auth headers,
+//! endpoint paths — are fully encapsulated in the adapter modules.
 
-use std::time::Duration;
+mod anthropic;
+mod ollama;
+mod openai;
 
-use anyhow::Context;
-use reqwest::{Client, header};
+pub use anthropic::AnthropicAdapter;
+pub use ollama::OllamaAdapter;
+pub use openai::OpenAIAdapter;
+
 use serde_json::Value;
 
-use crate::config::BackendConfig;
+use crate::config::{BackendConfig, Provider};
 
-/// HTTP client that forwards requests to a single LLM backend.
+/// Unified backend client — enum dispatch over concrete provider adapters.
 ///
-/// Built from a [`BackendConfig`] via [`BackendClient::new`]. Because
-/// [`reqwest::Client`] is cheap to clone (it holds an `Arc` internally),
-/// constructing one per request is acceptable and keeps the routing path
-/// stateless.
-pub struct BackendClient {
-    client: Client,
-    base_url: String,
+/// Constructed via [`BackendClient::new`] from a [`BackendConfig`]. All callers
+/// see a single API; the correct adapter is selected once at construction time.
+pub enum BackendClient {
+    /// OpenAI-compatible passthrough (also used for OpenRouter).
+    OpenAI(OpenAIAdapter),
+    /// Anthropic Messages API with request/response translation.
+    Anthropic(AnthropicAdapter),
+    /// Ollama local inference server (OpenAI-compat endpoint).
+    Ollama(OllamaAdapter),
 }
 
 impl BackendClient {
-    /// Construct a client for the given backend config.
+    /// Build a backend client from config, resolving any API key from the environment.
     ///
-    /// Resolves the API key from the environment variable named in `cfg.api_key_env`
-    /// (if any) and injects it as a static `Authorization: Bearer ...` header.
+    /// # Errors
+    /// Returns an error if the configured `api_key_env` variable is required but
+    /// unset in the environment (Anthropic always requires a key).
     pub fn new(cfg: &BackendConfig) -> anyhow::Result<Self> {
-        let mut headers = header::HeaderMap::new();
+        let base_url = cfg.base_url.trim_end_matches('/').to_string();
+        let api_key = cfg.api_key();
 
-        // Add Authorization header if a key is configured
-        if let Some(key) = cfg.api_key() {
-            let value = format!("Bearer {}", key);
-            headers.insert(
-                header::AUTHORIZATION,
-                header::HeaderValue::from_str(&value)
-                    .context("invalid API key value for Authorization header")?,
-            );
-        }
-
-        let client = Client::builder()
-            .default_headers(headers)
-            .timeout(Duration::from_millis(cfg.timeout_ms))
-            .build()
-            .context("building reqwest client")?;
-
-        Ok(Self {
-            client,
-            base_url: cfg.base_url.trim_end_matches('/').to_string(),
+        Ok(match cfg.provider {
+            Provider::OpenAI | Provider::OpenRouter => {
+                Self::OpenAI(OpenAIAdapter::new(base_url, cfg.timeout_ms, api_key))
+            }
+            Provider::Ollama => {
+                Self::Ollama(OllamaAdapter::new(base_url, cfg.timeout_ms))
+            }
+            Provider::Anthropic => {
+                let key = api_key.ok_or_else(|| {
+                    let env_var = cfg.api_key_env.as_deref().unwrap_or("<unset>");
+                    anyhow::anyhow!(
+                        "Anthropic backend requires an API key; \
+                         set the `{env_var}` environment variable"
+                    )
+                })?;
+                Self::Anthropic(AnthropicAdapter::new(base_url, cfg.timeout_ms, key))
+            }
         })
     }
 
-    /// Forward a `/v1/chat/completions` request body to this backend.
+    /// Forward a `/v1/chat/completions` request to the configured backend.
     ///
-    /// The `body` should already have `model` and `stream` rewritten by the
-    /// router before this is called.
-    ///
-    /// # Errors
-    /// Returns an error if the network request fails, the backend returns a
-    /// non-2xx status, or the response body is not valid JSON.
-    pub async fn chat_completions(&self, body: Value) -> anyhow::Result<Value> {
-        let url = format!("{}/v1/chat/completions", self.base_url);
-        let response = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .with_context(|| format!("POST {url}"))?;
-
-        let status = response.status();
-        let text = response.text().await.context("reading response body")?;
-
-        if !status.is_success() {
-            anyhow::bail!("backend returned HTTP {}: {}", status, text);
+    /// The request body should have `model` and `stream` already rewritten by
+    /// the router before this is called.
+    pub async fn chat_completions(&self, request: Value) -> anyhow::Result<Value> {
+        match self {
+            Self::OpenAI(a) => a.chat_completions(request).await,
+            Self::Anthropic(a) => a.chat_completions(request).await,
+            Self::Ollama(a) => a.chat_completions(request).await,
         }
-
-        serde_json::from_str(&text)
-            .with_context(|| format!("parsing backend response as JSON: {text}"))
     }
 
-    /// Probe this backend with a lightweight `GET /v1/models` request.
-    ///
-    /// Used by the admin `/admin/backends/health` endpoint to report readiness
-    /// without routing real traffic.
+    /// Probe this backend for liveness. Implementation varies by provider.
     pub async fn health_check(&self) -> anyhow::Result<()> {
-        let url = format!("{}/v1/models", self.base_url);
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .with_context(|| format!("GET {url}"))?;
-
-        anyhow::ensure!(
-            response.status().is_success(),
-            "health check returned HTTP {}",
-            response.status()
-        );
-        Ok(())
+        match self {
+            Self::OpenAI(a) => a.health_check().await,
+            Self::Anthropic(a) => a.health_check().await,
+            Self::Ollama(a) => a.health_check().await,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Provider;
     use serde_json::json;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -120,6 +100,7 @@ mod tests {
             base_url: server.uri(),
             api_key_env: None,
             timeout_ms: 5_000,
+            provider: Provider::OpenAI,
         }
     }
 
@@ -143,17 +124,19 @@ mod tests {
             base_url: "http://localhost:11434".into(),
             api_key_env: None,
             timeout_ms: 5_000,
+            provider: Provider::OpenAI,
         };
         assert!(BackendClient::new(&cfg).is_ok());
     }
 
     #[test]
     fn new_succeeds_when_configured_api_key_env_var_is_unset() {
-        // A missing env var is tolerated; the key is simply omitted from requests.
+        // A missing env var is tolerated for non-Anthropic providers; the key is omitted.
         let cfg = BackendConfig {
             base_url: "http://localhost:11434".into(),
             api_key_env: Some("CLAW_TEST_DEFINITELY_NOT_SET_XYZ_99".into()),
             timeout_ms: 5_000,
+            provider: Provider::OpenAI,
         };
         assert!(BackendClient::new(&cfg).is_ok());
     }
@@ -168,6 +151,7 @@ mod tests {
             base_url: "http://localhost:11434".into(),
             api_key_env: Some(var.into()),
             timeout_ms: 5_000,
+            provider: Provider::OpenAI,
         };
         let resolved = cfg.api_key();
         assert_eq!(resolved.as_deref(), Some("sk-test-resolved"));
@@ -180,6 +164,7 @@ mod tests {
             base_url: "http://x".into(),
             api_key_env: None,
             timeout_ms: 5_000,
+            provider: Provider::OpenAI,
         };
         assert!(cfg.api_key().is_none());
     }

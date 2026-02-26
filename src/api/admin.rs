@@ -72,6 +72,7 @@ pub async fn config(State(state): State<Arc<RouterState>>) -> impl IntoResponse 
         .map(|(name, b)| {
             json!({
                 "name": name,
+                "provider": b.provider.to_string(),
                 "base_url": b.base_url,
                 "api_key_env": b.api_key_env,
             })
