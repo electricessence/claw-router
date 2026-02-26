@@ -58,6 +58,20 @@ impl TrafficLog {
             .collect()
     }
 
+    /// Compute public-safe aggregate statistics (no tier/backend names).
+    pub async fn public_stats(&self) -> PublicStats {
+        let entries = self.entries.lock().await;
+        let total = entries.len();
+        let avg_latency_ms = if total == 0 {
+            0.0
+        } else {
+            entries.iter().map(|e| e.latency_ms as f64).sum::<f64>() / total as f64
+        };
+        let error_count = entries.iter().filter(|e| !e.success).count();
+        let escalation_count = entries.iter().filter(|e| e.escalated).count();
+        PublicStats { total_requests: total, error_count, escalation_count, avg_latency_ms }
+    }
+
     /// Compute aggregate statistics over all buffered entries.
     pub async fn stats(&self) -> TrafficStats {
         let entries = self.entries.lock().await;
@@ -172,6 +186,18 @@ pub struct TrafficStats {
     pub escalation_count: usize,
     pub avg_latency_ms: f64,
     pub tier_counts: std::collections::HashMap<String, usize>,
+}
+
+/// Public-safe aggregate statistics — no backend or tier names included.
+///
+/// Safe to return from an unauthenticated endpoint: contains only counts and
+/// latency data, never any configuration detail that could reveal infrastructure.
+#[derive(Debug, Serialize)]
+pub struct PublicStats {
+    pub total_requests: usize,
+    pub error_count: usize,
+    pub escalation_count: usize,
+    pub avg_latency_ms: f64,
 }
 
 #[cfg(test)]

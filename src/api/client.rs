@@ -20,6 +20,7 @@ use crate::{error::AppError, router::RouterState};
 pub fn router(state: Arc<RouterState>) -> Router {
     Router::new()
         .route("/healthz", get(crate::api::health::healthz))
+        .route("/status", get(crate::api::status::status))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/models", get(list_models))
         .with_state(state)

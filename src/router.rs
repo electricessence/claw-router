@@ -29,11 +29,13 @@ pub struct RouterState {
     pub config: Arc<Config>,
     /// In-memory ring-buffer of recent requests, exposed through the admin API.
     pub traffic: Arc<TrafficLog>,
+    /// Gateway start time — used to compute uptime for the public status endpoint.
+    pub started_at: std::time::Instant,
 }
 
 impl RouterState {
     pub fn new(config: Arc<Config>, traffic: Arc<TrafficLog>) -> Self {
-        Self { config, traffic }
+        Self { config, traffic, started_at: std::time::Instant::now() }
     }
 }
 
