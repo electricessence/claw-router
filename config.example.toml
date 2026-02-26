@@ -1,0 +1,84 @@
+# claw-router example configuration
+# Copy to config.toml and adjust values for your environment.
+# NEVER put secret values directly in this file — use api_key_env to name an env var.
+
+[gateway]
+client_port = 8080       # ZeroClaw / client-facing API
+admin_port  = 8081       # Admin API + web UI
+traffic_log_capacity = 500
+log_level = "info"
+
+# ---------------------------------------------------------------------------
+# Backends — one entry per LLM provider
+# ---------------------------------------------------------------------------
+
+[backends.ollama]
+base_url    = "http://ollama:11434"
+# No api_key_env needed for local Ollama
+
+[backends.openrouter]
+base_url    = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_KEY"  # resolved from environment at startup
+
+# Example: direct Anthropic key for the expert tier
+# [backends.anthropic]
+# base_url    = "https://api.anthropic.com"
+# api_key_env = "ANTHROPIC_KEY"
+
+# ---------------------------------------------------------------------------
+# Tiers — ordered cheapest → most capable
+# ---------------------------------------------------------------------------
+
+[[tiers]]
+name    = "local:fast"
+backend = "ollama"
+model   = "qwen2.5:1.5b"
+
+[[tiers]]
+name    = "local:capable"
+backend = "ollama"
+model   = "qwen2.5:7b"
+
+[[tiers]]
+name    = "cloud:economy"
+backend = "openrouter"
+model   = "anthropic/claude-haiku-4-5"
+
+[[tiers]]
+name    = "cloud:standard"
+backend = "openrouter"
+model   = "anthropic/claude-sonnet-4-5"
+
+[[tiers]]
+name    = "cloud:expert"
+backend = "openrouter"
+model   = "anthropic/claude-opus-4-5"
+
+# ---------------------------------------------------------------------------
+# Aliases — convenience names usable by clients as the "model" field
+# ---------------------------------------------------------------------------
+
+[aliases]
+"hint:fast"     = "local:fast"
+"hint:cheap"    = "local:fast"
+"hint:local"    = "local:capable"
+"hint:cloud"    = "cloud:economy"
+"hint:standard" = "cloud:standard"
+"hint:expert"   = "cloud:expert"
+
+# ---------------------------------------------------------------------------
+# Profiles — routing behaviour per client identity (future: per-connection)
+# ---------------------------------------------------------------------------
+
+[profiles.default]
+mode               = "dispatch"       # "dispatch" | "escalate"
+classifier         = "local:fast"     # tier used for intent classification (dispatch mode)
+max_auto_tier      = "cloud:economy"  # ceiling before expert_requires_flag kicks in
+expert_requires_flag = true           # client must set X-Claw-Expert: true to reach expert tier
+
+# Escalate profile — tries cheap first, steps up if response is insufficient
+[profiles.escalating]
+mode               = "escalate"
+classifier         = "local:fast"
+max_auto_tier      = "cloud:standard"
+expert_requires_flag = true

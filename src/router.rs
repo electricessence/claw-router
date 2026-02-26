@@ -1,0 +1,284 @@
+//! Request routing logic — the brain of claw-router.
+//!
+//! Two routing modes are supported:
+//!
+//! - **Dispatch** (`RoutingMode::Dispatch`): a fast local classifier determines
+//!   the appropriate tier up-front, then the request is forwarded there directly.
+//!   Predictable latency, no wasted backend calls.
+//!
+//! - **Escalate** (`RoutingMode::Escalate`): the cheapest tier is tried first.
+//!   If the response passes the [`is_sufficient`] heuristic it is returned;
+//!   otherwise the next tier up is tried. This minimises cost for simple queries
+//!   at the expense of higher tail latency on hard ones.
+
+use std::sync::Arc;
+
+use anyhow::Context;
+use serde_json::Value;
+use tracing::{debug, warn};
+
+use crate::{
+    backends::BackendClient,
+    config::{Config, RoutingMode, TierConfig},
+    traffic::{TrafficEntry, TrafficLog},
+};
+
+/// Shared application state injected into every request handler via [`axum::extract::State`].
+pub struct RouterState {
+    /// The validated, parsed configuration loaded at startup.
+    pub config: Arc<Config>,
+    /// In-memory ring-buffer of recent requests, exposed through the admin API.
+    pub traffic: Arc<TrafficLog>,
+}
+
+impl RouterState {
+    pub fn new(config: Arc<Config>, traffic: Arc<TrafficLog>) -> Self {
+        Self { config, traffic }
+    }
+}
+
+/// Route a `/v1/chat/completions` request body to the appropriate backend tier.
+///
+/// - Resolves the `model` field through aliases and tier names.
+/// - Selects a routing mode from the active [`ProfileConfig`].
+/// - Forwards the (rewritten) request and records a [`TrafficEntry`].
+///
+/// Returns the raw JSON response from the winning backend, plus the traffic entry
+/// so callers can surface per-request metadata (e.g. via response headers).
+pub async fn route(
+    state: &RouterState,
+    mut request_body: Value,
+    profile_name: Option<&str>,
+    stream: bool,
+) -> anyhow::Result<(Value, TrafficEntry)> {
+    let profile_name = profile_name.unwrap_or("default");
+    let profile = state
+        .config
+        .profile(profile_name)
+        .context("no matching profile and no default profile configured")?;
+
+    // Resolve model → tier — clone to a String so we don't hold a borrow into request_body
+    let model_hint = request_body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("hint:fast")
+        .to_owned();
+    let resolved_tier = state.config.resolve_tier(&model_hint);
+
+    let target_tier: &TierConfig = match resolved_tier {
+        Some(tier) => tier,
+        None => {
+            warn!(%model_hint, "unknown model/alias — falling back to classifier tier");
+            state
+                .config
+                .tiers
+                .iter()
+                .find(|t| t.name == profile.classifier)
+                .context("classifier tier not found")?
+        }
+    };
+
+    match profile.mode {
+        RoutingMode::Dispatch => {
+            dispatch(state, &mut request_body, target_tier, stream).await
+        }
+        RoutingMode::Escalate => {
+            escalate(state, &mut request_body, profile, stream).await
+        }
+    }
+}
+
+/// Mode A: classify up-front and dispatch directly to the resolved tier.
+///
+/// The request body is mutated in place to rewrite `model` and `stream`
+/// before being forwarded — no copy of the full body is made.
+async fn dispatch(
+    state: &RouterState,
+    body: &mut Value,
+    tier: &TierConfig,
+    stream: bool,
+) -> anyhow::Result<(Value, TrafficEntry)> {
+    let backend_cfg = state
+        .config
+        .backends
+        .get(&tier.backend)
+        .with_context(|| format!("backend `{}` not in config", tier.backend))?;
+
+    // Rewrite the model field to the backend's model name
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("model".into(), Value::String(tier.model.clone()));
+        obj.insert("stream".into(), Value::Bool(stream));
+    }
+
+    debug!(tier = %tier.name, backend = %tier.backend, model = %tier.model, "dispatching");
+
+    let client = BackendClient::new(backend_cfg)?;
+    let t0 = std::time::Instant::now();
+    let response = client.chat_completions(body.clone()).await?;
+    let latency_ms = t0.elapsed().as_millis() as u64;
+
+    let entry = TrafficEntry::new(tier.name.clone(), tier.backend.clone(), latency_ms, true);
+    state.traffic.push(entry.clone());
+
+    Ok((response, entry))
+}
+
+/// Mode B: try tiers cheapest-first and return the first sufficient response.
+///
+/// Iteration stops at `profile.max_auto_tier`. Backend failures and insufficient
+/// responses both cause escalation to the next tier. If every tier is exhausted
+/// without a sufficient response an error is returned.
+async fn escalate(
+    state: &RouterState,
+    body: &mut Value,
+    profile: &crate::config::ProfileConfig,
+    stream: bool,
+) -> anyhow::Result<(Value, TrafficEntry)> {
+    // Collect candidate tiers up to max_auto_tier
+    let max_idx = state
+        .config
+        .tiers
+        .iter()
+        .position(|t| t.name == profile.max_auto_tier)
+        .unwrap_or(state.config.tiers.len() - 1);
+
+    let candidates: Vec<&TierConfig> = state.config.tiers[..=max_idx].iter().collect();
+
+    for tier in &candidates {
+        let backend_cfg = match state.config.backends.get(&tier.backend) {
+            Some(b) => b,
+            None => continue,
+        };
+
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("model".into(), Value::String(tier.model.clone()));
+            obj.insert("stream".into(), Value::Bool(stream));
+        }
+
+        let client = match BackendClient::new(backend_cfg) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(tier = %tier.name, error = %e, "skipping tier — client build failed");
+                continue;
+            }
+        };
+
+        let t0 = std::time::Instant::now();
+        match client.chat_completions(body.clone()).await {
+            Ok(response) => {
+                let latency_ms = t0.elapsed().as_millis() as u64;
+                if is_sufficient(&response) {
+                    let entry =
+                        TrafficEntry::new(tier.name.clone(), tier.backend.clone(), latency_ms, true);
+                    state.traffic.push(entry.clone());
+                    return Ok((response, entry));
+                }
+                debug!(tier = %tier.name, "response insufficient — escalating");
+            }
+            Err(e) => {
+                warn!(tier = %tier.name, error = %e, "tier request failed — escalating");
+            }
+        }
+    }
+
+    // Exhausted all tiers — last resort: use the final candidate anyway
+    anyhow::bail!("all tiers exhausted without a sufficient response")
+}
+
+/// Decide whether a backend response is good enough to return or should be escalated.
+///
+/// This intentionally uses simple, fast heuristics rather than another LLM call:
+///
+/// - Responses shorter than 20 characters are almost certainly non-answers.
+/// - Common refusal phrases indicate the model couldn't help.
+///
+/// The function is `pub(crate)` so it can be unit-tested without making it part of
+/// the public API.
+pub(crate) fn is_sufficient(response: &Value) -> bool {
+    // Extract the content from the first choice
+    let content = response
+        .pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    // Escalate if the response is very short (likely a non-answer)
+    if content.len() < 20 {
+        return false;
+    }
+
+    // Escalate if the model explicitly refuses
+    let lower = content.to_lowercase();
+    let refusal_phrases = [
+        "i don't know",
+        "i cannot",
+        "i'm not able to",
+        "as an ai",
+        "i don't have enough information",
+    ];
+    if refusal_phrases.iter().any(|p| lower.contains(p)) {
+        return false;
+    }
+
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // -----------------------------------------------------------------------
+    // is_sufficient — pure heuristic, no I/O required
+    // -----------------------------------------------------------------------
+
+    fn response_with_content(content: &str) -> Value {
+        json!({
+            "choices": [{
+                "message": { "content": content }
+            }]
+        })
+    }
+
+    #[test]
+    fn sufficient_for_normal_response() {
+        let r = response_with_content("Here is a detailed explanation of how Rust lifetimes work.");
+        assert!(is_sufficient(&r));
+    }
+
+    #[test]
+    fn insufficient_when_content_is_very_short() {
+        // Under 20 chars — likely a fragment, not a real answer
+        assert!(!is_sufficient(&response_with_content("Sure.")));
+        assert!(!is_sufficient(&response_with_content("")));
+    }
+
+    #[test]
+    fn insufficient_when_model_refuses() {
+        let refusals = [
+            "I cannot help with that request.",
+            "As an AI, I must decline to answer.",
+            "I don't know the answer to your question.",
+            "I'm not able to provide that information.",
+            "I don't have enough information to respond accurately.",
+        ];
+        for phrase in refusals {
+            assert!(
+                !is_sufficient(&response_with_content(phrase)),
+                "expected refusal to be insufficient: {phrase}"
+            );
+        }
+    }
+
+    #[test]
+    fn refusal_detection_is_case_insensitive() {
+        let r = response_with_content("AS AN AI language model, I cannot do that at all.");
+        assert!(!is_sufficient(&r));
+    }
+
+    #[test]
+    fn insufficient_when_choices_array_is_missing() {
+        // Malformed response — treat as insufficient so we try again
+        assert!(!is_sufficient(&json!({})));
+        assert!(!is_sufficient(&json!({ "choices": [] })));
+    }
+}

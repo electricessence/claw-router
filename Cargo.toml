@@ -1,0 +1,51 @@
+[package]
+name = "claw-router"
+version = "0.1.0"
+edition = "2021"
+description = "Smart LLM routing gateway for ZeroClaw and compatible claw agents"
+license = "MIT"
+repository = "https://github.com/electricessence/claw-router"
+readme = "README.md"
+
+[[bin]]
+name = "claw-router"
+path = "src/main.rs"
+
+[dependencies]
+# HTTP server
+axum = { version = "0.8", features = ["ws"] }
+tower = { version = "0.5" }
+tower-http = { version = "0.6", features = ["cors", "trace", "timeout"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+
+# HTTP client (proxy to backends)
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls", "stream"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+dashmap = "6"   # concurrent hashmap for in-memory traffic log
+bytes = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
