@@ -22,7 +22,10 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 
 # HTTP client (proxy to backends)
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls", "stream"] }
+# TLS is selected via features — see [features] below.
+# Default (dev/Windows): native-tls (uses platform TLS, no extra C deps)
+# Docker build: --no-default-features --features rustls-tls (pure Rust, static-friendly)
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -43,6 +46,16 @@ chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 dashmap = "6"   # concurrent hashmap for in-memory traffic log
 bytes = "1"
+
+[features]
+# native-tls: uses the platform TLS stack (schannel on Windows, OpenSSL on Linux).
+# Enabled by default for local development — no extra C compiler requirements.
+default = ["native-tls"]
+native-tls = ["reqwest/native-tls"]
+# rustls-tls: pure-Rust TLS, no OpenSSL, fully static-link friendly.
+# Used by the production Docker build:
+#   cargo build --no-default-features --features rustls-tls
+rustls-tls = ["reqwest/rustls-tls"]
 
 [profile.release]
 opt-level = 3

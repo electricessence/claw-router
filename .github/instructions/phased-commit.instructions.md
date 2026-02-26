@@ -57,12 +57,12 @@ Once Phases 1–3 are clean:
 
 ---
 
-## Phase 5 — Push (REQUIRES EXPLICIT OPERATOR APPROVAL)
+## Phase 5 — Push (REQUIRES EXPLICIT APPROVAL)
 
-**Do NOT push without the operator explicitly saying to.**
+**Do NOT push without explicit approval.**
 
 After committing, report:
 - What was committed and on which branch
 - Any open concerns or follow-on work
 
-Then **wait**. Do not run `git push` until the operator confirms.
+Then **wait** for confirmation before running `git push`.

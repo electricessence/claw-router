@@ -17,6 +17,12 @@ pub use traffic::TrafficLog;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // When invoked as a Docker HEALTHCHECK, hit /healthz and exit immediately.
+    // This avoids needing any external tool (curl/wget) in the container image.
+    if std::env::args().nth(1).as_deref() == Some("--healthcheck") {
+        return healthcheck().await;
+    }
+
     // Initialise tracing
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -101,5 +107,23 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+    }
+}
+
+/// Lightweight healthcheck: GET /healthz and exit 0 on 200, 1 otherwise.
+/// Invoked via `lm-gateway --healthcheck` from Docker HEALTHCHECK.
+async fn healthcheck() -> anyhow::Result<()> {
+    let port = std::env::var("LMG_CLIENT_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(8080);
+
+    let url = format!("http://127.0.0.1:{port}/healthz");
+    let resp = reqwest::get(&url).await?;
+
+    if resp.status().is_success() {
+        std::process::exit(0);
+    } else {
+        std::process::exit(1);
     }
 }

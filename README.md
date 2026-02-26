@@ -1,4 +1,4 @@
-# LM Gateway
+# LM Gateway RS
 
 > **Ultra-lightweight LLM routing gateway written in Rust.**  
 > Single binary. No Python. No database. No bloat.
@@ -10,20 +10,40 @@
 
 ## What it does
 
-LM Gateway sits between your application and your LLM backends, providing a unified OpenAI-compatible interface across any number of local or cloud models. It handles credential management, tier-based routing, and intelligent escalation — so your application stays simple.
+LM Gateway RS sits between your application and your LLM backends, providing a unified OpenAI-compatible interface across any number of local or cloud models. It handles credential management, tier-based routing, and intelligent escalation — so your application stays simple.
 
-```
-Your App / Agent
-       │
-       ▼  POST /v1/chat/completions  (OpenAI-compat)
- ┌─────────────┐
- │  lm-gateway  │  :8080 (client)  :8081 (admin)
- └──────┬──────┘
-        │
-        ├──▶  Ollama  (local, free)
-        ├──▶  Anthropic  (direct)
-        ├──▶  OpenRouter  (cloud)
-        └──▶  Any OpenAI-compatible API
+```mermaid
+flowchart LR
+    subgraph clients["Clients"]
+        A1["AI Agent"]
+        A2["Web App"]
+        A3["CLI Tool"]
+        A4["Any OpenAI SDK Client"]
+    end
+
+    subgraph gateway["lm-gateway-rs"]
+        direction TB
+        GW["POST /v1/chat/completions\n:8080"]
+        RT{{"Routing Engine\ndispatch · escalate"}}
+        GW --> RT
+    end
+
+    subgraph backends["Backends"]
+        B1["Ollama\nlocal · free"]
+        B2["OpenRouter\ncloud · economy"]
+        B3["Anthropic\ncloud · expert"]
+        B4["Any OpenAI-compat API"]
+    end
+
+    A1 -->|"model: hint:fast"| GW
+    A2 -->|"model: hint:cloud"| GW
+    A3 -->|"model: hint:expert"| GW
+    A4 -->|"any alias or tier"| GW
+
+    RT -->|"local:fast / local:capable"| B1
+    RT -->|"cloud:economy / cloud:standard"| B2
+    RT -->|"cloud:expert"| B3
+    RT --> B4
 ```
 
 ---
@@ -36,7 +56,7 @@ LiteLLM is the most common answer to this problem. It has 100+ provider integrat
 - **Database-backed** — requires SQLite or Postgres for anything beyond basic routing
 - **Drifting SaaS-ward** — the Enterprise tier adds cost and cloud surface you don't need
 
-LM Gateway is the alternative when you want something that:
+LM Gateway RS is the alternative when you want something that:
 
 - Ships as a **single static binary** (`docker run` and done)
 - Has **zero external runtime dependencies**
@@ -92,10 +112,10 @@ Open the admin UI: `http://localhost:8081/`
 ## Client API (port 8080)
 
 | Method | Path | Description |
-|--------|------|-------------|
+| ------ | ---- | ----------- |
 | `POST` | `/v1/chat/completions` | Route a chat request |
-| `GET`  | `/v1/models` | List available tiers and aliases |
-| `GET`  | `/healthz` | Liveness probe |
+| `GET` | `/v1/models` | List available tiers and aliases |
+| `GET` | `/healthz` | Liveness probe |
 
 Use any tier name or alias as the `model` field:
 
@@ -113,7 +133,7 @@ Built-in aliases: `hint:fast`, `hint:cheap`, `hint:local`, `hint:cloud`, `hint:s
 ## Admin API (port 8081)
 
 | Method | Path | Description |
-|--------|------|-------------|
+| ------ | ---- | ----------- |
 | `GET` | `/` | Admin dashboard (web UI) |
 | `GET` | `/admin/health` | Gateway health + tier/backend counts |
 | `GET` | `/admin/traffic?limit=N` | Recent N requests + aggregate stats |
@@ -129,7 +149,7 @@ See [config.example.toml](config.example.toml) for a fully annotated example. A 
 **Key concepts:**
 
 | Concept | What it is |
-|---------|-----------|
+| ------- | ---------- |
 | **Backend** | A named LLM provider — base URL + optional secret env var |
 | **Tier** | A named (backend, model) pair in cheapest→best order |
 | **Alias** | Short name like `hint:fast` that resolves to a tier |
@@ -137,7 +157,7 @@ See [config.example.toml](config.example.toml) for a fully annotated example. A 
 
 **Environment variable for config path:**
 
-```
+```bash
 LMG_CONFIG=/path/to/config.toml   # default: /etc/lm-gateway/config.toml
 ```
 
@@ -156,10 +176,12 @@ LMG_CONFIG=/path/to/config.toml   # default: /etc/lm-gateway/config.toml
 ## Building
 
 ```bash
-# Development
+# Local development (uses platform TLS — schannel on Windows, OpenSSL on Linux)
 cargo build
 
-# Production Docker image (cap RAM for low-memory hosts)
+# Production Docker image
+# Uses rustls (pure-Rust TLS, no OpenSSL) for a fully static binary.
+# Cap RAM for low-memory hosts.
 docker build --memory=3g --build-arg CARGO_BUILD_JOBS=2 -t lm-gateway .
 ```
 
@@ -169,7 +191,7 @@ The release binary is statically linked and has no runtime dependencies beyond l
 
 ## Project layout
 
-```
+```text
 src/
 ├── main.rs          Startup, dual listeners, graceful shutdown
 ├── config.rs        Config types, TOML loading, validation
