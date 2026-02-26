@@ -72,7 +72,7 @@ pub async fn traffic(
 pub async fn config(State(state): State<Arc<RouterState>>) -> impl IntoResponse {
     let cfg = &state.config;
 
-    // Redact secrets — show env var name but not its resolved value
+    // Redact secrets completely — only expose whether a key is configured
     let backends: Vec<Value> = cfg
         .backends
         .iter()
@@ -81,7 +81,7 @@ pub async fn config(State(state): State<Arc<RouterState>>) -> impl IntoResponse 
                 "name": name,
                 "provider": b.provider.to_string(),
                 "base_url": b.base_url,
-                "api_key_env": b.api_key_env,
+                "has_api_key": b.api_key_env.is_some(),
             })
         })
         .collect();
