@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 
 use crate::{backends::BackendClient, router::RouterState};
 
-/// Build the admin-facing axum router (port 8081)
+/// Build the admin-facing axum router (port 8081).
 pub fn router(state: Arc<RouterState>) -> Router {
     Router::new()
         .route("/admin/health", get(health))
@@ -97,7 +97,7 @@ pub async fn config(State(state): State<Arc<RouterState>>) -> impl IntoResponse 
             (
                 name.clone(),
                 json!({
-                    "mode": format!("{:?}", p.mode).to_lowercase(),
+                    "mode": p.mode.to_string(),
                     "classifier": p.classifier,
                     "max_auto_tier": p.max_auto_tier,
                     "expert_requires_flag": p.expert_requires_flag,

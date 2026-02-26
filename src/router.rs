@@ -45,6 +45,13 @@ impl RouterState {
 ///
 /// Returns the raw JSON response from the winning backend, plus the traffic entry
 /// so callers can surface per-request metadata (e.g. via response headers).
+#[tracing::instrument(
+    skip(state, request_body),
+    fields(
+        profile = profile_name.unwrap_or("default"),
+        tier = tracing::field::Empty,
+    )
+)]
 pub async fn route(
     state: &RouterState,
     mut request_body: Value,
@@ -77,6 +84,8 @@ pub async fn route(
                 .context("classifier tier not found")?
         }
     };
+
+    tracing::Span::current().record("tier", target_tier.name.as_str());
 
     match profile.mode {
         RoutingMode::Dispatch => {

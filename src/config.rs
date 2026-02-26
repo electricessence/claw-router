@@ -214,6 +214,15 @@ pub enum RoutingMode {
     Escalate,
 }
 
+impl std::fmt::Display for RoutingMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Dispatch => "dispatch",
+            Self::Escalate => "escalate",
+        })
+    }
+}
+
 mod defaults {
     pub fn client_port() -> u16 { 8080 }
     pub fn admin_port() -> u16 { 8081 }

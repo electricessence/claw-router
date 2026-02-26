@@ -7,10 +7,12 @@ use tracing::info;
 mod api;
 mod backends;
 mod config;
+mod error;
 mod router;
 mod traffic;
 
 pub use config::Config;
+pub use error::AppError;
 pub use traffic::TrafficLog;
 
 #[tokio::main]
@@ -45,17 +47,25 @@ async fn main() -> anyhow::Result<()> {
 
     // Bind client API (ZeroClaw-facing)
     let client_addr: SocketAddr = format!("0.0.0.0:{}", config.gateway.client_port).parse()?;
-    let client_app = api::client::router(Arc::clone(&state));
 
     // Bind admin API
     let admin_addr: SocketAddr = format!("0.0.0.0:{}", config.gateway.admin_port).parse()?;
-    let admin_app = api::admin::router(Arc::clone(&state));
 
     info!(%client_addr, "client API listening");
     info!(%admin_addr, "admin API listening");
 
     let client_listener = tokio::net::TcpListener::bind(client_addr).await?;
     let admin_listener = tokio::net::TcpListener::bind(admin_addr).await?;
+
+    // Attach request tracing middleware to both servers
+    let trace_layer = || {
+        tower_http::trace::TraceLayer::new_for_http()
+            .make_span_with(tower_http::trace::DefaultMakeSpan::new().level(tracing::Level::INFO))
+            .on_response(tower_http::trace::DefaultOnResponse::new().level(tracing::Level::INFO))
+    };
+
+    let client_app = api::client::router(Arc::clone(&state)).layer(trace_layer());
+    let admin_app = api::admin::router(Arc::clone(&state)).layer(trace_layer());
 
     tokio::select! {
         result = axum::serve(client_listener, client_app) => {

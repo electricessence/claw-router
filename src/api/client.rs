@@ -8,16 +8,15 @@ use std::sync::Arc;
 
 use axum::{
     extract::State,
-    http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
 use serde_json::{json, Value};
 
-use crate::router::RouterState;
+use crate::{error::AppError, router::RouterState};
 
-/// Build the client-facing axum router (port 8080)
+/// Build the client-facing axum router (port 8080).
 pub fn router(state: Arc<RouterState>) -> Router {
     Router::new()
         .route("/healthz", get(crate::api::health::healthz))
@@ -26,53 +25,41 @@ pub fn router(state: Arc<RouterState>) -> Router {
         .with_state(state)
 }
 
-/// POST /v1/chat/completions — proxy to the selected backend/tier
+/// `POST /v1/chat/completions` — route a chat request through the tier ladder.
+///
+/// The `model` field in the request body selects the tier or alias. The router
+/// rewrites it to the backend's actual model name before forwarding.
 pub async fn chat_completions(
     State(state): State<Arc<RouterState>>,
     Json(body): Json<Value>,
-) -> impl IntoResponse {
-    match crate::router::route(&state, body, None, false).await {
-        Ok((resp, _entry)) => (StatusCode::OK, Json(resp)).into_response(),
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response(),
-    }
+) -> Result<impl IntoResponse, AppError> {
+    let (resp, _entry) = crate::router::route(&state, body, None, false).await?;
+    Ok(Json(resp))
 }
 
-/// GET /v1/models — returns configured tiers as model objects
+/// `GET /v1/models` — list available tiers and aliases as model objects.
+///
+/// Returns an OpenAI-compatible model list so ZeroClaw can enumerate what
+/// routing targets are available without any out-of-band config.
 pub async fn list_models(State(state): State<Arc<RouterState>>) -> impl IntoResponse {
-    let models: Vec<Value> = state
-        .config
-        .tiers
-        .iter()
-        .map(|t| {
-            json!({
-                "id": t.name,
-                "object": "model",
-                "owned_by": t.backend,
-            })
+    let tiers = state.config.tiers.iter().map(|t| {
+        json!({
+            "id": t.name,
+            "object": "model",
+            "owned_by": t.backend,
         })
-        .collect();
+    });
 
-    // Also include alias names pointing to their real tier
-    let mut alias_models: Vec<Value> = state
-        .config
-        .aliases
-        .iter()
-        .map(|(alias, target)| {
-            json!({
-                "id": alias,
-                "object": "model",
-                "owned_by": "alias",
-                "claw_router": { "resolves_to": target }
-            })
+    let aliases = state.config.aliases.iter().map(|(alias, target)| {
+        json!({
+            "id": alias,
+            "object": "model",
+            "owned_by": "alias",
+            "claw_router": { "resolves_to": target },
         })
-        .collect();
+    });
 
-    let mut all = models;
-    all.append(&mut alias_models);
-
-    Json(json!({ "object": "list", "data": all }))
+    let data: Vec<Value> = tiers.chain(aliases).collect();
+    Json(json!({ "object": "list", "data": data }))
 }
+
