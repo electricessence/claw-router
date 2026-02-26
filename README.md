@@ -12,57 +12,17 @@
 
 LM Gateway RS sits between your application and your LLM backends, providing a unified OpenAI-compatible interface across any number of local or cloud models. It handles credential management, tier-based routing, and intelligent escalation — so your application stays simple.
 
-```mermaid
-flowchart LR
-    subgraph clients["Clients"]
-        A1["AI Agent"]
-        A2["Web App"]
-        A3["CLI Tool"]
-        A4["Any OpenAI SDK Client"]
-    end
-
-    subgraph gateway["lm-gateway-rs"]
-        direction TB
-        GW["POST /v1/chat/completions\n:8080"]
-        RT{{"Routing Engine\ndispatch · escalate"}}
-        GW --> RT
-    end
-
-    subgraph backends["Backends"]
-        B1["Ollama\nlocal · free"]
-        B2["OpenRouter\ncloud · economy"]
-        B3["Anthropic\ncloud · expert"]
-        B4["Any OpenAI-compat API"]
-    end
-
-    A1 -->|"model: hint:fast"| GW
-    A2 -->|"model: hint:cloud"| GW
-    A3 -->|"model: hint:expert"| GW
-    A4 -->|"any alias or tier"| GW
-
-    RT -->|"local:fast / local:capable"| B1
-    RT -->|"cloud:economy / cloud:standard"| B2
-    RT -->|"cloud:expert"| B3
-    RT --> B4
-```
+![Architecture](docs/architecture.png)
 
 ---
 
-## Why not LiteLLM?
+## Why LM Gateway RS?
 
-LiteLLM is the most common answer to this problem. It has 100+ provider integrations and a large community. It is also:
-
-- **Python** — large runtime, complex dependency tree, slow cold start
-- **Database-backed** — requires SQLite or Postgres for anything beyond basic routing
-- **Drifting SaaS-ward** — the Enterprise tier adds cost and cloud surface you don't need
-
-LM Gateway RS is the alternative when you want something that:
-
-- Ships as a **single static binary** (`docker run` and done)
-- Has **zero external runtime dependencies**
+- Ships as a **single static binary** — `docker run` and done
+- **Zero external runtime dependencies** — no Python, no database, no daemon
 - Fits on a **Raspberry Pi or a $5 VPS**
-- Can be **audited in an afternoon** (< 2 000 lines of Rust)
-- Is **100% self-hosted** with no telemetry, no cloud account required
+- Can be **audited in an afternoon** — under 2 000 lines of Rust
+- **100% self-hosted** — no telemetry, no cloud account, no phone-home
 
 ---
 
