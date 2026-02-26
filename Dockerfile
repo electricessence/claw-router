@@ -7,7 +7,7 @@
 # Usage:
 #   docker build --memory=3g --build-arg CARGO_BUILD_JOBS=2 -t claw-router .
 
-FROM rust:1.82-slim-bookworm AS builder
+FROM rust:1.85-slim-bookworm AS builder
 
 ARG CARGO_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
