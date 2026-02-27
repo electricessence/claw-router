@@ -64,6 +64,7 @@ The admin UI (port 8081) currently serves over plain HTTP. Fine on a private net
 ### Pluggable secret backends
 
 API keys currently come from environment variables. Extend the config to pull from:
+
 - HashiCorp Vault
 - Infisical
 - Docker secrets / Kubernetes secrets
@@ -87,6 +88,7 @@ For deterministic or near-deterministic prompts, cache the response against a ha
 LiteLLM is a great project, but it carries a Python runtime, a PostgreSQL dependency (for production), and hundreds of megabytes of dependencies. That's the right tradeoff for teams that need its breadth.
 
 lm-gateway-rs is for operators who want:
+
 - A single static binary they can drop anywhere
 - A config file under 50 lines
 - Zero external state (no database, no cache server)
