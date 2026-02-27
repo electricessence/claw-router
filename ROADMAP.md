@@ -83,23 +83,11 @@ For deterministic or near-deterministic prompts, cache the response against a ha
 
 ## Vision
 
-### Why not LiteLLM?
+lm-gateway-rs is built on a simple principle: **the deployment model should never become the problem.** One binary. One config file. Zero external state. Runs anywhere.
 
-LiteLLM is a great project, but it carries a Python runtime, a PostgreSQL dependency (for production), and hundreds of megabytes of dependencies. That's the right tradeoff for teams that need its breadth.
+No Python runtime. No database. No framework you have to understand before you can understand the router. The source is small enough to read in an afternoon, and the config is under 50 lines for a full production setup.
 
-lm-gateway-rs is for operators who want:
-
-- A single static binary they can drop anywhere
-- A config file under 50 lines
-- Zero external state (no database, no cache server)
-- Rust-level reliability and memory safety
-- Transparent routing they can read and understand in an afternoon
-
-The goal is not feature parity with LiteLLM. The goal is **the minimum surface required to run a reliable, cost-conscious AI routing layer** — and to do that so well that reaching for something heavier never makes sense for that use case.
-
-### Where it's going
-
-The routing intelligence gets smarter over time — semantic routing based on prompt content, automatic cost/quality optimization, learning which backends are reliable over time. But the deployment model stays the same: one binary, one config file, runs anywhere.
+The routing intelligence grows over time — semantic routing based on prompt content, automatic cost/quality tradeoffs, backend reliability tracking. But the shape of the thing stays the same.
 
 ---
 
