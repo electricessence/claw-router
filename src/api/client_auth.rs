@@ -100,6 +100,8 @@ mod tests {
                     admin_token_env: None,
                     max_retries: None,
                     retry_delay_ms: None,
+                    health_window: None,
+                    health_error_threshold: None,
                 },
                 backends: HashMap::new(),
                 tiers: vec![],

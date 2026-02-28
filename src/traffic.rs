@@ -99,6 +99,46 @@ impl TrafficLog {
             tier_counts,
         }
     }
+
+    /// Compute per-backend health from the most recent `window` entries for each backend.
+    ///
+    /// Returns a map from backend name to [`BackendHealthStats`].  Backends with no
+    /// traffic in the window are not included — callers should treat a missing entry
+    /// as healthy (no evidence of failure yet).
+    ///
+    /// A minimum of 3 samples is required before a backend can be classified as
+    /// unhealthy, to avoid false positives for rarely-used or newly-added backends.
+    pub async fn backend_health(
+        &self,
+        window: usize,
+        threshold: f64,
+    ) -> std::collections::HashMap<String, BackendHealthStats> {
+        let entries = self.entries.lock().await;
+        // Iterate newest-first, collecting up to `window` outcomes per backend.
+        let mut by_backend: std::collections::HashMap<String, Vec<bool>> =
+            std::collections::HashMap::new();
+        for entry in entries.iter().rev() {
+            let bucket = by_backend.entry(entry.backend.clone()).or_default();
+            if bucket.len() < window {
+                bucket.push(entry.success);
+            }
+        }
+        by_backend
+            .into_iter()
+            .map(|(backend, outcomes)| {
+                let total = outcomes.len();
+                let errors = outcomes.iter().filter(|&&ok| !ok).count();
+                let error_rate = if total == 0 {
+                    0.0
+                } else {
+                    errors as f64 / total as f64
+                };
+                // Require at least 3 samples before marking a backend unhealthy.
+                let healthy = total < 3 || error_rate < threshold;
+                (backend, BackendHealthStats { total, errors, error_rate, healthy })
+            })
+            .collect()
+    }
 }
 
 /// A single request record.
@@ -208,6 +248,22 @@ pub struct PublicStats {
     pub error_count: usize,
     pub escalation_count: usize,
     pub avg_latency_ms: f64,
+}
+
+/// Per-backend health summary derived from recent traffic entries.
+///
+/// Returned by [`TrafficLog::backend_health`]. A backend needs at least 3
+/// samples in the window before it can be classified as unhealthy.
+#[derive(Debug, Clone, Serialize)]
+pub struct BackendHealthStats {
+    /// Number of recent entries for this backend within the window.
+    pub total: usize,
+    /// Number of those entries that were errors.
+    pub errors: usize,
+    /// Error fraction in `[0.0, 1.0]`.
+    pub error_rate: f64,
+    /// `true` if the backend passes the health threshold (or has < 3 samples).
+    pub healthy: bool,
 }
 
 #[cfg(test)]

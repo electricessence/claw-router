@@ -283,7 +283,32 @@ async fn escalate(
 
     let candidates: Vec<&TierConfig> = config.tiers[..=max_idx].iter().collect();
 
+    // Pre-fetch backend health snapshot so degraded backends can be skipped.
+    let health_window = config.gateway.health_window.unwrap_or(10);
+    let health_threshold = config.gateway.health_error_threshold.unwrap_or(0.7);
+    let backend_health = if health_window > 0 {
+        state.traffic.backend_health(health_window, health_threshold).await
+    } else {
+        std::collections::HashMap::new()
+    };
+
     for (tier_idx, tier) in candidates.iter().enumerate() {
+        // Skip tiers whose backends are currently degraded (too many recent errors).
+        if health_window > 0 {
+            if let Some(health) = backend_health.get(&tier.backend) {
+                if !health.healthy {
+                    warn!(
+                        tier = %tier.name,
+                        backend = %tier.backend,
+                        error_rate = health.error_rate,
+                        window = health.total,
+                        "skipping unhealthy backend — escalating"
+                    );
+                    continue;
+                }
+            }
+        }
+
         let backend_cfg = match config.backends.get(&tier.backend) {
             Some(b) => b,
             None => continue,
@@ -522,6 +547,8 @@ mod tests {
                 admin_token_env: None,
                 max_retries: None,
                 retry_delay_ms: None,
+                health_window: None,
+                health_error_threshold: None,
             },
             backends: {
                 let mut m = std::collections::HashMap::new();
@@ -674,6 +701,8 @@ mod tests {
                     admin_token_env: None,
                     max_retries: None,
                     retry_delay_ms: None,
+                    health_window: None,
+                    health_error_threshold: None,
                 },
                 backends: std::collections::HashMap::new(),
                 tiers: vec![],

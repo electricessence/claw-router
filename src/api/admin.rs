@@ -137,9 +137,28 @@ pub async fn config(State(state): State<Arc<RouterState>>) -> impl IntoResponse 
 
 /// GET /admin/backends/health — probe every configured backend
 pub async fn backends_health(State(state): State<Arc<RouterState>>) -> impl IntoResponse {
+    let cfg = state.config();
+    let health_window = cfg.gateway.health_window.unwrap_or(10);
+    let health_threshold = cfg.gateway.health_error_threshold.unwrap_or(0.7);
+    // Snapshot of traffic-based backend health (empty when no traffic yet or window=0).
+    let traffic_health = if health_window > 0 {
+        state.traffic.backend_health(health_window, health_threshold).await
+    } else {
+        std::collections::HashMap::new()
+    };
+
     let mut results = Vec::new();
 
-    for (name, backend_cfg) in &state.config().backends {
+    for (name, backend_cfg) in &cfg.backends {
+        let traffic = traffic_health.get(name).map(|h| {
+            json!({
+                "window": h.total,
+                "errors": h.errors,
+                "error_rate": h.error_rate,
+                "healthy": h.healthy,
+            })
+        });
+
         let client = match BackendClient::new(backend_cfg) {
             Ok(c) => c,
             Err(e) => {
@@ -147,17 +166,23 @@ pub async fn backends_health(State(state): State<Arc<RouterState>>) -> impl Into
                     "backend": name,
                     "status": "error",
                     "error": e.to_string(),
+                    "traffic": traffic,
                 }));
                 continue;
             }
         };
 
         match client.health_check().await {
-            Ok(_) => results.push(json!({ "backend": name, "status": "ok" })),
+            Ok(_) => results.push(json!({
+                "backend": name,
+                "status": "ok",
+                "traffic": traffic,
+            })),
             Err(e) => results.push(json!({
                 "backend": name,
                 "status": "unreachable",
                 "error": e.to_string(),
+                "traffic": traffic,
             })),
         }
     }
@@ -226,6 +251,8 @@ mod tests {
                 admin_token_env: None,
                 max_retries: None,
                 retry_delay_ms: None,
+                health_window: None,
+                health_error_threshold: None,
             },
             backends: {
                 let mut m = std::collections::HashMap::new();

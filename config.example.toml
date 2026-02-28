@@ -24,6 +24,10 @@ log_level = "info"
 # max_retries = 2
 # retry_delay_ms = 200
 
+# Backend health tracking: auto-skip degraded backends in escalate mode.
+# health_window = 10        # recent requests per backend to consider (0 = disable)
+# health_error_threshold = 0.7  # fraction of errors to flag a backend as unhealthy
+
 # ---------------------------------------------------------------------------
 # Backends — one entry per LLM provider
 # The `provider` field selects the protocol adapter (default: "openai").

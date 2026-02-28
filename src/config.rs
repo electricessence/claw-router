@@ -247,6 +247,24 @@ pub struct GatewayConfig {
     /// Ignored when `max_retries` is 0 or unset.
     #[serde(default)]
     pub retry_delay_ms: Option<u64>,
+
+    /// Sliding-window size for backend health tracking (default: 10).
+    ///
+    /// The gateway tracks the last `health_window` requests per backend. In
+    /// escalate mode, if a backend's error rate over this window exceeds
+    /// `health_error_threshold`, that backend is skipped and the next tier is
+    /// tried instead. Set to 0 to disable health-based routing entirely.
+    #[serde(default)]
+    pub health_window: Option<usize>,
+
+    /// Error-rate threshold above which a backend is considered unhealthy
+    /// (default: 0.7 = 70 %).
+    ///
+    /// Value in `(0.0, 1.0]`. A backend must have at least 3 samples in the
+    /// window before it can be flagged as unhealthy. Set to `1.0` to
+    /// effectively disable health-based skipping.
+    #[serde(default)]
+    pub health_error_threshold: Option<f64>,
 }
 
 /// A named backend (Ollama instance, OpenRouter, Anthropic direct, etc.).
