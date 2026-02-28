@@ -20,6 +20,7 @@ A lightweight, single-binary LLM routing gateway in Rust. No Python. No database
 - In-memory traffic log (ring buffer) — no disk I/O
 - `GET /status` — zero-leak public metrics (uptime, request counts, error rate)
 - `GET /` admin UI — live traffic table, backend health, profiles, config view (no secrets)
+- `GET /v1/models` — OpenAI-compatible model list; returns all configured tier names and aliases so standard clients auto-discover routing targets
 - TOML config under 50 lines for a full production setup
 - Docker image under 15 MB (`scratch` base, static musl binary)
 
@@ -42,22 +43,6 @@ A lightweight, single-binary LLM routing gateway in Rust. No Python. No database
 ## Short Range
 
 > Targeted next
-
-### `GET /v1/models` — model discovery
-
-Return the list of configured tier names and aliases as a standard OpenAI `/v1/models` response. Most OpenAI-compatible clients call this endpoint on startup to populate their model selector — without it, users must manually configure model names.
-
-```json
-{
-  "object": "list",
-  "data": [
-    { "id": "hint:fast",     "object": "model" },
-    { "id": "hint:capable",  "object": "model" },
-    { "id": "local:fast",    "object": "model" },
-    { "id": "cloud:economy", "object": "model" }
-  ]
-}
-```
 
 ### Traffic log export
 
