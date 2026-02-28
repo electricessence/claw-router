@@ -99,7 +99,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::{
-        config::{BackendConfig, Config, GatewayConfig, ProfileConfig, RoutingMode, TierConfig},
+        config::{Config, GatewayConfig, ProfileConfig, RoutingMode, TierConfig},
         router::RouterState,
         traffic::{TrafficEntry, TrafficLog},
     };
@@ -111,8 +111,10 @@ mod tests {
                 admin_port: 8081,
                 traffic_log_capacity: 100,
                 log_level: None,
-                    rate_limit_rpm: None,
-                    admin_token_env: None,
+                rate_limit_rpm: None,
+                admin_token_env: None,
+                max_retries: None,
+                retry_delay_ms: None,
             },
             backends: std::collections::HashMap::new(),
             tiers: vec![TierConfig {
@@ -134,6 +136,7 @@ mod tests {
                 );
                 m
             },
+            clients: vec![],
         };
         Arc::new(RouterState::new(Arc::new(config), std::path::PathBuf::default(), Arc::new(TrafficLog::new(100))))
     }
@@ -231,12 +234,15 @@ mod tests {
                 traffic_log_capacity: 100,
                 log_level: None,
                 rate_limit_rpm: None,
-                    admin_token_env: None,
+                admin_token_env: None,
+                max_retries: None,
+                retry_delay_ms: None,
             },
             backends,
             tiers: vec![],
             aliases: std::collections::HashMap::new(),
             profiles: std::collections::HashMap::new(),
+            clients: vec![],
         };
         let state = Arc::new(RouterState::new(
             Arc::new(config),

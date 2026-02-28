@@ -135,8 +135,10 @@ mod tests {
                 admin_port: 8081,
                 traffic_log_capacity: 100,
                 log_level: None,
-                    rate_limit_rpm: None,
-                    admin_token_env: None,
+                rate_limit_rpm: None,
+                admin_token_env: None,
+                max_retries: None,
+                retry_delay_ms: None,
             },
             backends: {
                 let mut m = std::collections::HashMap::new();
@@ -146,6 +148,7 @@ mod tests {
                         base_url: base_url.into(),
                         api_key_env: None,
                         timeout_ms: 5_000,
+                        provider: crate::config::Provider::default(),
                     },
                 );
                 m
@@ -180,6 +183,7 @@ mod tests {
                 );
                 m
             },
+            clients: vec![],
         };
         Arc::new(RouterState::new(
             Arc::new(config),

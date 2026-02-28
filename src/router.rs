@@ -189,6 +189,12 @@ pub async fn route(
 ///
 /// The request body is mutated in place to rewrite `model` and `stream`
 /// before being forwarded — no copy of the full body is made.
+///
+/// Retries up to `config.gateway.max_retries` times on failure, with
+/// exponential backoff starting at `config.gateway.retry_delay_ms` (default
+/// 200 ms), doubling per attempt, capped at 2 000 ms. On exhaustion the last
+/// error is returned — in escalate mode this bubbles up to trigger escalation
+/// to the next tier.
 async fn dispatch(
     state: &RouterState,
     body: &mut Value,
@@ -207,16 +213,53 @@ async fn dispatch(
         obj.insert("stream".into(), Value::Bool(stream));
     }
 
-    debug!(tier = %tier.name, backend = %tier.backend, model = %tier.model, "dispatching");
+    let max_retries = config.gateway.max_retries.unwrap_or(0);
+    let retry_delay_ms = config.gateway.retry_delay_ms.unwrap_or(200);
 
-    let client = BackendClient::new(backend_cfg)?;
-    let t0 = std::time::Instant::now();
-    let response = client.chat_completions(body.clone()).await?;
-    let latency_ms = t0.elapsed().as_millis() as u64;
+    debug!(
+        tier = %tier.name,
+        backend = %tier.backend,
+        model = %tier.model,
+        max_retries,
+        "dispatching"
+    );
 
-    let entry = TrafficEntry::new(tier.name.clone(), tier.backend.clone(), latency_ms, true);
+    let mut last_err: anyhow::Error = anyhow::anyhow!("no attempts made");
+    let mut delay_ms = retry_delay_ms;
 
-    Ok((response, entry))
+    for attempt in 0..=max_retries {
+        if attempt > 0 {
+            let sleep = std::cmp::min(delay_ms, 2_000);
+            warn!(
+                tier = %tier.name,
+                attempt,
+                delay_ms = sleep,
+                "retrying after backend error"
+            );
+            tokio::time::sleep(tokio::time::Duration::from_millis(sleep)).await;
+            delay_ms = delay_ms.saturating_mul(2);
+        }
+
+        let client = BackendClient::new(backend_cfg)?;
+        let t0 = std::time::Instant::now();
+        match client.chat_completions(body.clone()).await {
+            Ok(response) => {
+                let latency_ms = t0.elapsed().as_millis() as u64;
+                let entry = TrafficEntry::new(
+                    tier.name.clone(),
+                    tier.backend.clone(),
+                    latency_ms,
+                    true,
+                );
+                return Ok((response, entry));
+            }
+            Err(e) => {
+                last_err = e;
+            }
+        }
+    }
+
+    Err(last_err)
 }
 
 /// Mode B: try tiers cheapest-first and return the first sufficient response.
@@ -477,6 +520,8 @@ mod tests {
                 log_level: None,
                 rate_limit_rpm: None,
                 admin_token_env: None,
+                max_retries: None,
+                retry_delay_ms: None,
             },
             backends: {
                 let mut m = std::collections::HashMap::new();
@@ -486,6 +531,7 @@ mod tests {
                         base_url: server.uri(),
                         api_key_env: None,
                         timeout_ms: 5_000,
+                        provider: crate::config::Provider::default(),
                     },
                 );
                 m
@@ -520,6 +566,7 @@ mod tests {
                 );
                 m
             },
+            clients: vec![],
         };
         RouterState::new(Arc::new(config), std::path::PathBuf::default(), Arc::new(TrafficLog::new(100)))
     }
@@ -625,17 +672,20 @@ mod tests {
                     log_level: None,
                     rate_limit_rpm: None,
                     admin_token_env: None,
+                    max_retries: None,
+                    retry_delay_ms: None,
                 },
                 backends: std::collections::HashMap::new(),
                 tiers: vec![],
                 aliases: std::collections::HashMap::new(),
                 profiles: std::collections::HashMap::new(), // no default
+                clients: vec![],
             }),
             std::path::PathBuf::default(),
             Arc::new(TrafficLog::new(10)),
         );
 
-        let result = route(&state, json!({}), None, false).await;
+        let result = route(&state, json!({}), None, None, false).await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()

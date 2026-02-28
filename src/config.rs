@@ -232,6 +232,21 @@ pub struct GatewayConfig {
     /// Example: `admin_token_env = "LMG_ADMIN_TOKEN"`.
     #[serde(default)]
     pub admin_token_env: Option<String>,
+
+    /// Number of additional attempts after the first failure (default: 0 = no retry).
+    ///
+    /// On each retry the gateway waits `retry_delay_ms` (doubled per attempt,
+    /// capped at 2 s) before calling the backend again. Only transient errors
+    /// (network failures, 5xx) benefit from retries; 4xx errors are not retried.
+    #[serde(default)]
+    pub max_retries: Option<u32>,
+
+    /// Initial delay between retry attempts in milliseconds (default: 200).
+    ///
+    /// Doubles on each subsequent attempt, capped at 2000 ms.
+    /// Ignored when `max_retries` is 0 or unset.
+    #[serde(default)]
+    pub retry_delay_ms: Option<u64>,
 }
 
 /// A named backend (Ollama instance, OpenRouter, Anthropic direct, etc.).

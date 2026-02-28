@@ -18,6 +18,12 @@ log_level = "info"
 # hosts only).
 # admin_token_env = "LMG_ADMIN_TOKEN"
 
+# Retry on backend failure: number of additional attempts after the first error.
+# Delay starts at retry_delay_ms (default 200 ms), doubles each attempt (max 2 s).
+# Leave unset or set to 0 to disable retries.
+# max_retries = 2
+# retry_delay_ms = 200
+
 # ---------------------------------------------------------------------------
 # Backends — one entry per LLM provider
 # The `provider` field selects the protocol adapter (default: "openai").

@@ -98,6 +98,8 @@ mod tests {
                     log_level: None,
                     rate_limit_rpm: None,
                     admin_token_env: None,
+                    max_retries: None,
+                    retry_delay_ms: None,
                 },
                 backends: HashMap::new(),
                 tiers: vec![],
@@ -113,7 +115,7 @@ mod tests {
     }
 
     async fn echo_profile(profile: Option<Extension<ClientProfile>>) -> String {
-        profile.map(|p| p.0.clone()).unwrap_or_else(|| "none".into())
+        profile.map(|Extension(ClientProfile(s))| s).unwrap_or_else(|| "none".to_owned())
     }
 
     fn app(state: Arc<RouterState>) -> Router {
