@@ -9,28 +9,33 @@ A lightweight, single-binary LLM routing gateway in Rust. No Python. No database
 
 ## Where We Are Today
 
-**v0.1 — Working**
+**v0.1 — Stable**
 
 - Single binary, zero runtime dependencies
-- Transparent multi-backend routing (Anthropic, OpenAI-compatible, Ollama)
-- Tier-based escalation: route cheapest-first, escalate when response quality is insufficient
+- Transparent multi-backend routing (Anthropic, OpenAI-compatible, Ollama, OpenRouter)
+- Tier-based escalation: route cheapest-first, escalate when needed
 - Model aliasing: expose simple names (`hint:fast`, `hint:capable`) regardless of backend
-- Profile system: named routing policies per use-case
+- Per-client API keys mapped to named routing profiles
+- Profile-level routing policies: mode, classifier tier, max auto-escalation tier
 - In-memory traffic log (ring buffer) — no disk I/O
 - `GET /status` — zero-leak public metrics (uptime, request counts, error rate)
-- `GET /` admin UI — live traffic table, backend health, config view (no secrets exposed)
-- `GET /healthz` — liveness probe for container orchestrators
+- `GET /` admin UI — live traffic table, backend health, profiles, config view (no secrets)
 - TOML config under 50 lines for a full production setup
 - Docker image under 15 MB (`scratch` base, static musl binary)
 
-**v0.2 — In progress**
+**v0.2 — Complete**
 
-- **Anthropic streaming translation**: on-the-fly SSE event translation — `stream: true` works end-to-end with Anthropic backends
-- **`GET /metrics`**: Prometheus-compatible scrape endpoint on the admin port (all TYPE gauge; ring-buffer windowed stats)
-- **Config hot-reload**: gateway picks up config changes without restart (mtime polling + `POST /admin/reload`)
-- **Request ID tracing**: `X-Request-ID` header propagated or generated per request; unified with traffic log entry IDs
-- **Rate limiting**: per-client-IP token bucket on the client port; configurable RPM via `rate_limit_rpm`
-- **Admin Bearer token auth**: `POST /admin/reload` and all admin routes optionally protected by `Authorization: Bearer <token>` (configured via `admin_token_env`)
+- **Anthropic streaming**: on-the-fly SSE translation — `stream: true` works end-to-end with Anthropic backends
+- **`GET /metrics`**: Prometheus-compatible scrape endpoint (TYPE gauge; ring-buffer windowed stats)
+- **Config hot-reload**: `POST /admin/reload` applies config changes without restart; `↺ Reload` button in admin UI
+- **Request ID tracing**: `X-Request-ID` propagated or generated per request; matches traffic log entry IDs
+- **Per-IP rate limiting**: token bucket on the client port; configurable via `rate_limit_rpm`
+- **Admin Bearer token auth**: all admin routes optionally protected via `admin_token_env`
+- **Retry / backend failover**: configurable `max_retries` + `retry_delay_ms`; automatic failover to next tier on error
+- **Backend health tracking**: recent-window error-rate snapshot; degraded backends skipped during escalation
+- **Per-profile rate limits**: shared RPM quota per profile — all keys mapped to the same profile share a single bucket
+- **Pluggable secret backends**: `api_key_secret = { source = "env", var = "..." }` or `{ source = "file", path = "..." }` — supports Docker secrets, Kubernetes mounts, any file-based store
+- **Admin dashboard improvements**: backend cards show live health + traffic error rate; profiles section; secret source badge (env/file); setup warning banner when keys are unresolved
 
 ---
 
@@ -38,21 +43,30 @@ A lightweight, single-binary LLM routing gateway in Rust. No Python. No database
 
 > Targeted next
 
-### Per-client API keys + routing profiles
+### `GET /v1/models` — model discovery
 
-Right now the gateway has one routing identity. The next step is making it multi-tenant: each downstream client presents their own key, and the gateway maps that key to a profile (model set, cost policy, rate limits).
+Return the list of configured tier names and aliases as a standard OpenAI `/v1/models` response. Most OpenAI-compatible clients call this endpoint on startup to populate their model selector — without it, users must manually configure model names.
 
-```toml
-[[clients]]
-key_env = "CLIENT_ACME_KEY"
-profile = "economy"
-
-[[clients]]
-key_env = "CLIENT_INTERNAL_KEY"
-profile = "expert"
+```json
+{
+  "object": "list",
+  "data": [
+    { "id": "hint:fast",     "object": "model" },
+    { "id": "hint:capable",  "object": "model" },
+    { "id": "local:fast",    "object": "model" },
+    { "id": "cloud:economy", "object": "model" }
+  ]
+}
 ```
 
-Use cases: different agents with different budgets, exposing the gateway to a team with per-member keys, cost isolation per consumer.
+### Traffic log export
+
+The traffic ring buffer is in-memory only — it disappears on restart. Two opt-in export modes:
+
+- **JSONL append**: write each completed request to a file (`traffic_log_path` in config)
+- **Webhook**: POST each entry as JSON to a configurable URL (`traffic_webhook_url`)
+
+Both are optional and fire async so they don't add latency to the request path.
 
 ---
 
@@ -60,25 +74,11 @@ Use cases: different agents with different budgets, exposing the gateway to a te
 
 ### TLS for the admin port
 
-The admin UI (port 8081) currently serves over plain HTTP. Fine on a private network, but not acceptable if admin access crosses a trust boundary. Plan: termination via a reverse proxy (Caddy) is already the recommended deployment pattern — native TLS support inside the binary is secondary.
+The admin UI (port 8081) serves over plain HTTP. Fine on a private network; not acceptable across trust boundaries. The recommended pattern is termination via a reverse proxy (Caddy, nginx) — native TLS in the binary is a secondary option.
 
-### Pluggable secret backends
+### Response caching (opt-in, request-scoped)
 
-API keys currently come from environment variables. Extend the config to pull from:
-
-- HashiCorp Vault
-- Infisical
-- Docker secrets / Kubernetes secrets
-
-The env var path stays as the default; secret backends are opt-in.
-
-### Rate limiting
-
-Per-IP rate limits are now implemented on the client port (token bucket, configurable RPM). Per-profile and per-client-key limits are a future extension once client keys are implemented.
-
-### Response caching (semantic, opt-in)
-
-For deterministic or near-deterministic prompts, cache the response against a hash of the request. Configurable TTL, configurable profiles. Reduces cost significantly for classification/routing agents that ask the same questions repeatedly.
+For deterministic or near-deterministic prompts, cache the response against a hash of the full request (model + messages + sampling params). Configurable TTL per profile. **Disabled by default; never shared across profiles.** Most useful for classification pipelines that ask the same question repeatedly.
 
 ---
 
