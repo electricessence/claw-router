@@ -60,10 +60,9 @@ impl BackendClient {
             }
             Provider::Anthropic => {
                 let key = api_key.ok_or_else(|| {
-                    let env_var = cfg.api_key_env.as_deref().unwrap_or("<unset>");
                     anyhow::anyhow!(
                         "Anthropic backend requires an API key; \
-                         set the `{env_var}` environment variable"
+                         configure api_key_env or api_key_secret in the backend config"
                     )
                 })?;
                 Self::Anthropic(AnthropicAdapter::new(base_url, cfg.timeout_ms, key))
@@ -125,6 +124,7 @@ mod tests {
         BackendConfig {
             base_url: server.uri(),
             api_key_env: None,
+            api_key_secret: None,
             timeout_ms: 5_000,
             provider: Provider::OpenAI,
         }
@@ -149,6 +149,7 @@ mod tests {
         let cfg = BackendConfig {
             base_url: "http://localhost:11434".into(),
             api_key_env: None,
+            api_key_secret: None,
             timeout_ms: 5_000,
             provider: Provider::OpenAI,
         };
@@ -161,6 +162,7 @@ mod tests {
         let cfg = BackendConfig {
             base_url: "http://localhost:11434".into(),
             api_key_env: Some("LMG_TEST_DEFINITELY_NOT_SET_XYZ_99".into()),
+            api_key_secret: None,
             timeout_ms: 5_000,
             provider: Provider::OpenAI,
         };
@@ -176,6 +178,7 @@ mod tests {
         let cfg = BackendConfig {
             base_url: "http://localhost:11434".into(),
             api_key_env: Some(var.into()),
+            api_key_secret: None,
             timeout_ms: 5_000,
             provider: Provider::OpenAI,
         };
@@ -189,6 +192,7 @@ mod tests {
         let cfg = BackendConfig {
             base_url: "http://x".into(),
             api_key_env: None,
+            api_key_secret: None,
             timeout_ms: 5_000,
             provider: Provider::OpenAI,
         };

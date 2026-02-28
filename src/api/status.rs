@@ -52,13 +52,13 @@ pub async fn status(State(state): State<Arc<RouterState>>) -> impl IntoResponse 
     };
 
     // Count backends that require a key but don't have one resolved.
-    // We expose the count, not the names, to avoid leaking config detail.
+    // Covers both api_key_env and api_key_secret sources.
     let config = state.config();
     let unconfigured = config
         .backends
         .values()
         .filter(|b| {
-            b.api_key_env.is_some()
+            b.has_api_key_configured()
                 && b.api_key().map(|k: String| k.is_empty()).unwrap_or(true)
         })
         .count();
@@ -226,6 +226,7 @@ mod tests {
             crate::config::BackendConfig {
                 base_url: "https://api.example.com".into(),
                 api_key_env: Some(env_var.into()),
+                api_key_secret: None,
                 timeout_ms: 30_000,
                 provider: crate::config::Provider::OpenAI,
             },

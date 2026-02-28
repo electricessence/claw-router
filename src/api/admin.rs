@@ -88,7 +88,7 @@ pub async fn config(State(state): State<Arc<RouterState>>) -> impl IntoResponse 
                 "name": name,
                 "provider": b.provider.to_string(),
                 "base_url": b.base_url,
-                "has_api_key": b.api_key_env.is_some(),
+                "has_api_key": b.has_api_key_configured(),
             })
         })
         .collect();
@@ -261,6 +261,7 @@ mod tests {
                     BackendConfig {
                         base_url: base_url.into(),
                         api_key_env: Some("LMG_ADMIN_TEST_KEY".into()), // deliberately unset
+                        api_key_secret: None,
                         timeout_ms: 5_000,
                         provider: crate::config::Provider::default(),
                     },

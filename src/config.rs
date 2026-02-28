@@ -267,17 +267,73 @@ pub struct GatewayConfig {
     pub health_error_threshold: Option<f64>,
 }
 
+/// A reference to a secret value from one of the supported secret stores.
+///
+/// Use alongside (or instead of) `api_key_env` in [`BackendConfig`].
+/// When both `api_key_secret` and `api_key_env` are present, `api_key_secret`
+/// takes precedence.
+///
+/// ```toml
+/// # Environment variable (backcompat shorthand):
+/// api_key_env = "ANTHROPIC_KEY"
+///
+/// # Typed env-var form  (equivalent):
+/// api_key_secret = { source = "env", var = "ANTHROPIC_KEY" }
+///
+/// # Docker / Kubernetes file secret:
+/// api_key_secret = { source = "file", path = "/run/secrets/anthropic_key" }
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum SecretSource {
+    /// Read the secret value from an environment variable.
+    Env {
+        /// Name of the environment variable.
+        var: String,
+    },
+    /// Read the secret value from a file.
+    ///
+    /// Typical uses: Docker secrets (`/run/secrets/<name>`), Kubernetes
+    /// mounted secrets, or any file-based secret store.
+    /// Trailing newlines and carriage returns are stripped automatically.
+    File {
+        /// Absolute path to the file containing the secret.
+        path: String,
+    },
+}
+
+impl SecretSource {
+    /// Resolve and return the secret, or `None` if unavailable.
+    pub fn resolve(&self) -> Option<String> {
+        match self {
+            Self::Env { var } => std::env::var(var).ok().filter(|v| !v.is_empty()),
+            Self::File { path } => std::fs::read_to_string(path)
+                .ok()
+                .map(|s| s.trim_end_matches(['\n', '\r']).to_owned())
+                .filter(|v| !v.is_empty()),
+        }
+    }
+}
+
 /// A named backend (Ollama instance, OpenRouter, Anthropic direct, etc.).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BackendConfig {
     /// Base URL — must end without a trailing `/v1` (added by the client).
     pub base_url: String,
 
-    /// Environment variable name whose value is the API key.
+    /// Shorthand for `api_key_secret = { source = "env", var = "..." }`.
     ///
     /// Leave unset for keyless local backends (e.g., Ollama with no auth).
+    /// When `api_key_secret` is also set, this field is ignored.
     #[serde(default)]
     pub api_key_env: Option<String>,
+
+    /// Typed secret reference for the API key.
+    ///
+    /// Supports `"env"` (same as `api_key_env`) and `"file"` (Docker / k8s
+    /// secrets and any file-based store). Takes precedence over `api_key_env`.
+    #[serde(default)]
+    pub api_key_secret: Option<SecretSource>,
 
     /// Request timeout in milliseconds (default: 30 000).
     #[serde(default = "defaults::timeout_ms")]
@@ -293,11 +349,23 @@ pub struct BackendConfig {
 }
 
 impl BackendConfig {
-    /// Resolve the API key from the configured environment variable.
+    /// Resolve the API key using the configured secret source.
+    ///
+    /// Checks `api_key_secret` first; falls back to `api_key_env`.
+    /// Returns `None` if neither is configured or the value is unavailable.
     pub fn api_key(&self) -> Option<String> {
+        if let Some(source) = &self.api_key_secret {
+            return source.resolve();
+        }
         self.api_key_env
             .as_deref()
             .and_then(|var| std::env::var(var).ok())
+    }
+
+    /// Returns `true` if this backend has any API key source configured
+    /// (whether or not the value is currently resolvable).
+    pub fn has_api_key_configured(&self) -> bool {
+        self.api_key_secret.is_some() || self.api_key_env.is_some()
     }
 }
 

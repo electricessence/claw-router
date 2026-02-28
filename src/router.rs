@@ -576,6 +576,7 @@ mod tests {
                     BackendConfig {
                         base_url: server.uri(),
                         api_key_env: None,
+                        api_key_secret: None,
                         timeout_ms: 5_000,
                         provider: crate::config::Provider::default(),
                     },

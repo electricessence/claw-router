@@ -47,7 +47,9 @@ api_key_env = "OPENROUTER_KEY"  # resolved from environment at startup
 # [backends.anthropic]
 # provider    = "anthropic"
 # base_url    = "https://api.anthropic.com"
-# api_key_env = "ANTHROPIC_KEY"
+# api_key_env = "ANTHROPIC_KEY"          # env var shorthand
+# api_key_secret = { source = "env", var = "ANTHROPIC_KEY" }  # typed equivalent
+# api_key_secret = { source = "file", path = "/run/secrets/anthropic_key" }  # Docker/k8s
 
 # ---------------------------------------------------------------------------
 # Tiers — ordered cheapest → most capable
