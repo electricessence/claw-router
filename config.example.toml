@@ -96,3 +96,23 @@ mode               = "escalate"
 classifier         = "local:fast"
 max_auto_tier      = "cloud:standard"
 expert_requires_flag = true
+
+# ---------------------------------------------------------------------------
+# Clients — per-client API key → profile bindings
+#
+# When any [[clients]] entry is present, every request to the client port
+# MUST carry a matching "Authorization: Bearer <key>" header. Requests with
+# a missing or unrecognised key get 401. Leave this section empty (or absent)
+# to disable client key auth and route all requests through the default profile.
+#
+# NEVER put the key value here — put it in an environment variable and
+# reference the variable name with key_env.
+# ---------------------------------------------------------------------------
+
+# [[clients]]
+# key_env = "CLIENT_INTERNAL_KEY"    # export CLIENT_INTERNAL_KEY=<secret>
+# profile = "escalating"
+
+# [[clients]]
+# key_env = "CLIENT_ECONOMY_KEY"
+# profile = "default"

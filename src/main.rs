@@ -80,6 +80,10 @@ async fn main() -> anyhow::Result<()> {
     let client_app = api::client::router(Arc::clone(&state))
         .layer(axum::middleware::from_fn_with_state(
             Arc::clone(&state),
+            api::client_auth::client_auth_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
             api::rate_limit::rate_limit_middleware,
         ))
         .layer(axum::middleware::from_fn(api::request_id::request_id_middleware))

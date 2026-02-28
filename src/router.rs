@@ -12,6 +12,7 @@
 //!   at the expense of higher tail latency on hard ones.
 
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{Arc, RwLock},
 };
@@ -50,6 +51,13 @@ pub struct RouterState {
     /// Resolved at startup from `config.gateway.admin_token_env`; not
     /// updated on hot-reload.
     pub admin_token: Option<String>,
+    /// Maps resolved client API key values → profile names.
+    ///
+    /// Built at startup by reading each `[[clients]]` entry's `key_env`.
+    /// An empty map means no client key auth is configured — all requests
+    /// use the `default` profile (if present) or no profile.
+    /// Not updated on hot-reload; restart required to pick up new client keys.
+    pub client_map: HashMap<String, String>,
 }
 
 impl RouterState {
@@ -65,6 +73,17 @@ impl RouterState {
             .as_deref()
             .and_then(|var| std::env::var(var).ok())
             .filter(|t| !t.is_empty());
+        let client_map: HashMap<String, String> = config
+            .clients
+            .iter()
+            .filter_map(|c| {
+                let key = std::env::var(&c.key_env).ok().filter(|k| !k.is_empty())?;
+                Some((key, c.profile.clone()))
+            })
+            .collect();
+        if !client_map.is_empty() {
+            tracing::info!(count = client_map.len(), "loaded client key mappings");
+        }
         Self {
             config_lock: Arc::new(RwLock::new(config)),
             config_path,
@@ -72,6 +91,7 @@ impl RouterState {
             started_at: std::time::Instant::now(),
             rate_limiter,
             admin_token,
+            client_map,
         }
     }
 

@@ -66,6 +66,28 @@ impl std::fmt::Display for Provider {
     }
 }
 
+/// A per-client API key binding.
+///
+/// The gateway reads the actual key value from the environment variable named
+/// by `key_env` at startup. This keeps secrets out of the config file.
+///
+/// ```toml
+/// [[clients]]
+/// key_env = "CLIENT_ACME_KEY"
+/// profile = "economy"
+///
+/// [[clients]]
+/// key_env = "CLIENT_INTERNAL_KEY"
+/// profile = "expert"
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ClientConfig {
+    /// Name of the environment variable whose value is this client's Bearer token.
+    pub key_env: String,
+    /// The profile to use when this client's key is matched.
+    pub profile: String,
+}
+
 /// Top-level gateway configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -88,6 +110,15 @@ pub struct Config {
     /// Named routing profiles. The `default` profile is used when no client key is matched.
     #[serde(default)]
     pub profiles: HashMap<String, ProfileConfig>,
+
+    /// Per-client API key → profile mappings.
+    ///
+    /// Each entry binds a Bearer token (loaded from an env var at startup) to a
+    /// named profile. When a client presents a key that matches an entry, that
+    /// profile is used for the request. When no key is presented, or the key does
+    /// not match any entry, the `default` profile is used (if configured).
+    #[serde(default)]
+    pub clients: Vec<ClientConfig>,
 }
 
 impl Config {
@@ -129,6 +160,18 @@ impl Config {
                 "profile `{}` classifier references unknown tier `{}`",
                 name,
                 profile.classifier
+            );
+        }
+
+        // Every client entry must reference a known profile
+        let profile_names: std::collections::HashSet<&str> =
+            self.profiles.keys().map(|k| k.as_str()).collect();
+        for client in &self.clients {
+            anyhow::ensure!(
+                profile_names.contains(client.profile.as_str()),
+                "[[clients]] entry with key_env `{}` references unknown profile `{}`",
+                client.key_env,
+                client.profile
             );
         }
 

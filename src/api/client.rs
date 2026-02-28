@@ -16,7 +16,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use crate::{
-    api::request_id::RequestId,
+    api::{client_auth::ClientProfile, request_id::RequestId},
     backends::SseStream,
     error::AppError,
     router::RouterState,
@@ -41,19 +41,21 @@ pub fn router(state: Arc<RouterState>) -> Router {
 pub async fn chat_completions(
     State(state): State<Arc<RouterState>>,
     request_id_ext: Option<Extension<RequestId>>,
+    client_profile: Option<Extension<ClientProfile>>,
     Json(body): Json<Value>,
 ) -> Result<Response, AppError> {
     let req_id = request_id_ext.map(|Extension(id)| id.0);
+    let profile = client_profile.map(|Extension(p)| p.0);
     let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
 
     if streaming {
         let (stream, _entry) =
-            crate::router::route_stream(&state, body, None, req_id.as_deref()).await?;
+            crate::router::route_stream(&state, body, profile.as_deref(), req_id.as_deref()).await?;
         return Ok(proxy_sse(stream));
     }
 
     let (resp, _entry) =
-        crate::router::route(&state, body, None, req_id.as_deref(), false).await?;
+        crate::router::route(&state, body, profile.as_deref(), req_id.as_deref(), false).await?;
     Ok(Json(resp).into_response())
 }
 
