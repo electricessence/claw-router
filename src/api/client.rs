@@ -42,8 +42,14 @@ pub async fn chat_completions(
     State(state): State<Arc<RouterState>>,
     request_id_ext: Option<Extension<RequestId>>,
     client_profile: Option<Extension<ClientProfile>>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Response, AppError> {
+    let expert_gate = headers
+        .get("x-claw-expert")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
     let req_id = request_id_ext.map(|Extension(id)| id.0);
     let profile = client_profile.map(|Extension(p)| p.0);
     let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
@@ -70,12 +76,12 @@ pub async fn chat_completions(
 
     if streaming {
         let (stream, _entry) =
-            crate::router::route_stream(&state, body, profile.as_deref(), req_id.as_deref()).await?;
+            crate::router::route_stream(&state, body, profile.as_deref(), req_id.as_deref(), expert_gate).await?;
         return Ok(proxy_sse(stream));
     }
 
     let (resp, _entry) =
-        crate::router::route(&state, body, profile.as_deref(), req_id.as_deref(), false).await?;
+        crate::router::route(&state, body, profile.as_deref(), req_id.as_deref(), false, expert_gate).await?;
     Ok(Json(resp).into_response())
 }
 

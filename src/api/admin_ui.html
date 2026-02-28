@@ -525,7 +525,7 @@ async function reloadConfig() {
   try {
     const r = await fetch(BASE + '/admin/reload', { method: 'POST' });
     if (r.ok) {
-      showToast('Config reloaded ✓', 'ok');
+      showToast('Config reloaded ✓  (note: rate limits, client keys & admin token require a restart)', 'ok');
       configLoaded = false; // invalidate Config drawer cache
       await refreshConfig();
       await refreshHealth(); // re-evaluate ready state

@@ -184,7 +184,7 @@ impl Config {
     /// 1. Try `model` as an alias key → follow to tier name.
     /// 2. Try `model` as a direct tier name.
     /// 3. Return `None` if neither matches.
-    pub fn resolve_tier<'a>(&'a self, model: &'a str) -> Option<&'a TierConfig> {
+    pub fn resolve_tier<'a>(&'a self, model: &str) -> Option<&'a TierConfig> {
         let tier_name = self.aliases.get(model).map(|s| s.as_str()).unwrap_or(model);
         self.tiers.iter().find(|t| t.name == tier_name)
     }
@@ -400,7 +400,7 @@ pub struct ProfileConfig {
     #[serde(default)]
     pub mode: RoutingMode,
 
-    /// Tier used for pre-classification (must be a fast local tier).
+    /// Fallback tier used when the model hint does not match any known tier or alias.
     pub classifier: String,
 
     /// Highest tier auto-escalation can reach without an explicit override.

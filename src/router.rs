@@ -2,9 +2,10 @@
 //!
 //! Two routing modes are supported:
 //!
-//! - **Dispatch** (`RoutingMode::Dispatch`): a fast local classifier determines
-//!   the appropriate tier up-front, then the request is forwarded there directly.
-//!   Predictable latency, no wasted backend calls.
+//! - **Dispatch** (`RoutingMode::Dispatch`): the `model` field in the request is
+//!   resolved through aliases and tier names to a target tier, then forwarded
+//!   directly. Predictable latency, no wasted backend calls. Unknown hints fall
+//!   back to the profile's configured fallback tier.
 //!
 //! - **Escalate** (`RoutingMode::Escalate`): the cheapest tier is tried first.
 //!   If the response passes the [`is_sufficient`] heuristic it is returned;
@@ -149,6 +150,7 @@ pub async fn route(
     profile_name: Option<&str>,
     request_id: Option<&str>,
     stream: bool,
+    expert_gate: bool,
 ) -> anyhow::Result<(Value, TrafficEntry)> {
     let profile_name = profile_name.unwrap_or("default");
     let config = state.config();
@@ -156,24 +158,8 @@ pub async fn route(
         .profile(profile_name)
         .context("no matching profile and no default profile configured")?;
 
-    // Resolve model → tier — clone to a String so we don't hold a borrow into request_body
-    let model_hint = request_body
-        .get("model")
-        .and_then(Value::as_str)
-        .unwrap_or("hint:fast")
-        .to_owned();
-    let resolved_tier = config.resolve_tier(&model_hint);
-    let target_tier: &TierConfig = match resolved_tier {
-        Some(tier) => tier,
-        None => {
-            warn!(%model_hint, "unknown model/alias — falling back to classifier tier");
-            config
-                .tiers
-                .iter()
-                .find(|t| t.name == profile.classifier)
-                .context("classifier tier not found")?
-        }
-    };
+    let (target_tier, model_hint) =
+        resolve_target_tier(&config, profile, &request_body, expert_gate)?;
 
     tracing::Span::current().record("tier", target_tier.name.as_str());
 
@@ -202,6 +188,63 @@ pub async fn route(
     state.traffic.push(entry.clone());
 
     Ok((response, entry))
+}
+
+/// Resolve the model hint in the request body to a concrete [`TierConfig`].
+///
+/// Alias indirection is applied first (`hint:fast` → `local:fast`). When the
+/// hint is unrecognised, the profile's fallback tier is used. If
+/// `profile.expert_requires_flag` is `true` and the resolved tier sits above
+/// `max_auto_tier` in the ladder, the request is rejected unless `expert_gate`
+/// is `true` (i.e. the client sent `X-Claw-Expert: true`).
+///
+/// Returns the resolved tier and the original model hint string (needed for
+/// traffic log annotations).
+fn resolve_target_tier<'a>(
+    config: &'a Config,
+    profile: &crate::config::ProfileConfig,
+    request_body: &Value,
+    expert_gate: bool,
+) -> anyhow::Result<(&'a TierConfig, String)> {
+    let model_hint = request_body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("hint:fast")
+        .to_owned();
+
+    let target_tier: &TierConfig = match config.resolve_tier(&model_hint) {
+        Some(tier) => tier,
+        None => {
+            warn!(%model_hint, "unknown model/alias — falling back to fallback tier");
+            config
+                .tiers
+                .iter()
+                .find(|t| t.name == profile.classifier)
+                .context("fallback tier not found in config")?
+        }
+    };
+
+    // Enforce expert gate: tiers above max_auto_tier require an explicit opt-in.
+    if profile.expert_requires_flag && !expert_gate {
+        let max_idx = config
+            .tiers
+            .iter()
+            .position(|t| t.name == profile.max_auto_tier)
+            .unwrap_or_else(|| config.tiers.len().saturating_sub(1));
+        let tier_idx = config
+            .tiers
+            .iter()
+            .position(|t| t.name == target_tier.name)
+            .unwrap_or(0);
+        if tier_idx > max_idx {
+            anyhow::bail!(
+                "tier `{}` requires the `X-Claw-Expert: true` header",
+                target_tier.name
+            );
+        }
+    }
+
+    Ok((target_tier, model_hint))
 }
 
 /// Mode A: classify up-front and dispatch directly to the resolved tier.
@@ -243,6 +286,7 @@ async fn dispatch(
         "dispatching"
     );
 
+    let client = BackendClient::new(backend_cfg)?;
     let mut last_err: anyhow::Error = anyhow::anyhow!("no attempts made");
     let mut delay_ms = retry_delay_ms;
 
@@ -259,7 +303,6 @@ async fn dispatch(
             delay_ms = delay_ms.saturating_mul(2);
         }
 
-        let client = BackendClient::new(backend_cfg)?;
         let t0 = std::time::Instant::now();
         match client.chat_completions(body.clone()).await {
             Ok(response) => {
@@ -382,6 +425,7 @@ pub async fn route_stream(
     mut request_body: Value,
     profile_name: Option<&str>,
     request_id: Option<&str>,
+    expert_gate: bool,
 ) -> anyhow::Result<(SseStream, TrafficEntry)> {
     let profile_name = profile_name.unwrap_or("default");
     let config = state.config();
@@ -389,24 +433,8 @@ pub async fn route_stream(
         .profile(profile_name)
         .context("no matching profile and no default profile configured")?;
 
-    let model_hint = request_body
-        .get("model")
-        .and_then(Value::as_str)
-        .unwrap_or("hint:fast")
-        .to_owned();
-
-    let resolved_tier = config.resolve_tier(&model_hint);
-    let target_tier: &TierConfig = match resolved_tier {
-        Some(tier) => tier,
-        None => {
-            warn!(%model_hint, "unknown model/alias — falling back to classifier tier");
-            config
-                .tiers
-                .iter()
-                .find(|t| t.name == profile.classifier)
-                .context("classifier tier not found")?
-        }
-    };
+    let (target_tier, model_hint) =
+        resolve_target_tier(&config, profile, &request_body, expert_gate)?;
 
     let backend_cfg = config
         .backends
@@ -446,13 +474,16 @@ pub async fn route_stream(
 
 /// Decide whether a backend response is good enough to return or should be escalated.
 ///
-/// This intentionally uses simple, fast heuristics rather than another LLM call:
+/// # ⚠️ Heuristic stopgap
 ///
+/// This is a best-effort heuristic, not a reliable quality gate. It will produce
+/// false positives (escalating a valid response) and false negatives (accepting a
+/// low-quality one). Use escalation mode only where the occasional wrong call is
+/// acceptable. Do not extend this without measuring against real data.
+///
+/// Current checks:
 /// - Responses shorter than 20 characters are almost certainly non-answers.
-/// - Common refusal phrases indicate the model couldn't help.
-///
-/// The function is `pub(crate)` so it can be unit-tested without making it part of
-/// the public API.
+/// - A small set of refusal phrases indicate the model couldn't or wouldn't help.
 pub(crate) fn is_sufficient(response: &Value) -> bool {
     // Extract the content from the first choice
     let content = response
@@ -469,7 +500,7 @@ pub(crate) fn is_sufficient(response: &Value) -> bool {
     let lower = content.to_lowercase();
     let refusal_phrases = [
         "i don't know",
-        "i cannot",
+        "i cannot help",
         "i'm not able to",
         "as an ai",
         "i don't have enough information",
@@ -639,7 +670,7 @@ mod tests {
         let state = mock_state(&server, RoutingMode::Dispatch).await;
         let body = json!({ "model": "hint:fast", "messages": [{"role": "user", "content": "hi"}] });
 
-        let result = route(&state, body, None, None, false).await;
+        let result = route(&state, body, None, None, false, false).await;
         assert!(result.is_ok(), "dispatch failed: {:?}", result.err());
 
         let (resp, entry) = result.unwrap();
@@ -663,7 +694,7 @@ mod tests {
         let state = mock_state(&server, RoutingMode::Dispatch).await;
         let body = json!({ "model": "cloud:economy", "messages": [] });
 
-        let (_, entry) = route(&state, body, None, None, false).await.unwrap();
+        let (_, entry) = route(&state, body, None, None, false, false).await.unwrap();
         assert_eq!(entry.tier, "cloud:economy");
     }
 
@@ -682,7 +713,7 @@ mod tests {
         let state = mock_state(&server, RoutingMode::Escalate).await;
         let body = json!({ "model": "hint:fast", "messages": [] });
 
-        let (_, entry) = route(&state, body, None, None, false).await.unwrap();
+        let (_, entry) = route(&state, body, None, None, false, false).await.unwrap();
         // Should have stopped at the first (cheapest) tier
         assert_eq!(entry.tier, "local:fast");
     }
@@ -701,7 +732,7 @@ mod tests {
         let state = mock_state(&server, RoutingMode::Dispatch).await;
         let body = json!({ "model": "local:fast", "messages": [] });
 
-        route(&state, body, None, None, false).await.unwrap();
+        route(&state, body, None, None, false, false).await.unwrap();
 
         let entries = state.traffic.recent(10).await;
         assert_eq!(entries.len(), 1);
@@ -735,7 +766,7 @@ mod tests {
             Arc::new(TrafficLog::new(10)),
         );
 
-        let result = route(&state, json!({}), None, None, false).await;
+        let result = route(&state, json!({}), None, None, false, false).await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -758,7 +789,7 @@ mod tests {
         // "totally:unknown" exists in neither aliases nor tiers — should fall back to classifier
         let body = json!({ "model": "totally:unknown", "messages": [] });
 
-        let (_, entry) = route(&state, body, None, None, false).await.unwrap();
+        let (_, entry) = route(&state, body, None, None, false, false).await.unwrap();
         // classifier is "local:fast"
         assert_eq!(entry.tier, "local:fast");
     }
