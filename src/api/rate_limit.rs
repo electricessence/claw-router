@@ -87,6 +87,17 @@ impl RateLimiter {
         bucket.tokens = new_tokens - 1.0;
         Ok(())
     }
+
+    /// Attempt to consume one token from the shared (single-bucket) pool.
+    ///
+    /// Used by per-profile rate limiters where ALL clients sharing the same
+    /// profile draw from one common bucket. The caller does not provide an IP —
+    /// a fixed sentinel address is used internally so the DashMap holds exactly
+    /// one bucket entry per profile limiter.
+    pub fn check_global(&self) -> Result<(), f64> {
+        // A non-routable sentinel — will never appear as a real client IP.
+        self.check(IpAddr::V4(std::net::Ipv4Addr::new(127, 250, 0, 1)))
+    }
 }
 
 /// Axum middleware that enforces per-IP rate limits.

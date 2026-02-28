@@ -58,6 +58,13 @@ pub struct RouterState {
     /// use the `default` profile (if present) or no profile.
     /// Not updated on hot-reload; restart required to pick up new client keys.
     pub client_map: HashMap<String, String>,
+
+    /// Per-profile shared rate limiters, keyed by profile name.
+    ///
+    /// Built at startup from profiles that specify a non-zero `rate_limit_rpm`.
+    /// Each limiter enforces a total-RPM quota shared across ALL clients that
+    /// resolve to the same profile. Not updated on hot-reload.
+    pub profile_limiters: HashMap<String, Arc<RateLimiter>>,
 }
 
 impl RouterState {
@@ -84,6 +91,17 @@ impl RouterState {
         if !client_map.is_empty() {
             tracing::info!(count = client_map.len(), "loaded client key mappings");
         }
+        let profile_limiters: HashMap<String, Arc<RateLimiter>> = config
+            .profiles
+            .iter()
+            .filter_map(|(name, profile)| {
+                let rpm = profile.rate_limit_rpm.filter(|&r| r > 0)?;
+                Some((name.clone(), Arc::new(RateLimiter::new(rpm))))
+            })
+            .collect();
+        if !profile_limiters.is_empty() {
+            tracing::info!(count = profile_limiters.len(), "loaded per-profile rate limiters");
+        }
         Self {
             config_lock: Arc::new(RwLock::new(config)),
             config_path,
@@ -92,6 +110,7 @@ impl RouterState {
             rate_limiter,
             admin_token,
             client_map,
+            profile_limiters,
         }
     }
 
@@ -589,6 +608,7 @@ mod tests {
                         classifier: "local:fast".into(),
                         max_auto_tier: "cloud:economy".into(),
                         expert_requires_flag: false,
+                        rate_limit_rpm: None,
                     },
                 );
                 m

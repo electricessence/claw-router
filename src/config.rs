@@ -331,6 +331,15 @@ pub struct ProfileConfig {
     /// `"tier": "expert"` field in the request body or a custom header.
     #[serde(default)]
     pub expert_requires_flag: bool,
+
+    /// Maximum requests per minute shared across **all** clients that resolve
+    /// to this profile (default: unlimited).
+    ///
+    /// This is a profile-wide quota — not per-client-key. A value of 0 or
+    /// absent means no per-profile limit; the global `gateway.rate_limit_rpm`
+    /// (per-IP) still applies independently.
+    #[serde(default)]
+    pub rate_limit_rpm: Option<u32>,
 }
 
 /// How the routing decision is made.
@@ -442,6 +451,7 @@ mod tests {
                 classifier: "no-such-tier".into(),
                 max_auto_tier: "local:fast".into(),
                 expert_requires_flag: false,
+                rate_limit_rpm: None,
             },
         );
         assert!(config.validate().is_err());

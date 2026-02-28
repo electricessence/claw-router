@@ -48,6 +48,26 @@ pub async fn chat_completions(
     let profile = client_profile.map(|Extension(p)| p.0);
     let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
 
+    // Per-profile rate limit: shared quota across all clients on the same profile.
+    let profile_name = profile.as_deref().unwrap_or("default");
+    if let Some(limiter) = state.profile_limiters.get(profile_name) {
+        if let Err(retry_after) = limiter.check_global() {
+            use axum::http::StatusCode;
+            return Ok((
+                StatusCode::TOO_MANY_REQUESTS,
+                [
+                    ("retry-after", retry_after.to_string()),
+                    ("x-ratelimit-limit", limiter.rpm.to_string()),
+                    ("x-ratelimit-policy", format!("{};w=60", limiter.rpm)),
+                    ("x-ratelimit-scope", "profile".to_string()),
+                    ("content-type", "text/plain".to_string()),
+                ],
+                "Profile rate limit exceeded. Please retry after the indicated delay.",
+            )
+                .into_response());
+        }
+    }
+
     if streaming {
         let (stream, _entry) =
             crate::router::route_stream(&state, body, profile.as_deref(), req_id.as_deref()).await?;
@@ -181,6 +201,7 @@ mod tests {
                         classifier: "local:fast".into(),
                         max_auto_tier: "cloud:economy".into(),
                         expert_requires_flag: false,
+                        rate_limit_rpm: None,
                     },
                 );
                 m

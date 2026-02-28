@@ -288,6 +288,7 @@ mod tests {
                         classifier: "local:fast".into(),
                         max_auto_tier: "local:fast".into(),
                         expert_requires_flag: false,
+                        rate_limit_rpm: None,
                     },
                 );
                 m
