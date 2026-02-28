@@ -203,6 +203,33 @@
   .backend-traffic.warn { color: var(--orange); }
   .backend-traffic.bad  { color: var(--red); }
 
+  /* ── Profile cards ── */
+  #profiles {
+    display: flex; flex-wrap: wrap; gap: 10px;
+    margin-bottom: 28px;
+  }
+  .profile-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 16px;
+    display: flex; flex-direction: column; gap: 6px;
+    min-width: 160px;
+  }
+  .profile-name { font-family: var(--mono); font-size: 13px; font-weight: 700; }
+  .profile-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .mode-badge {
+    font-family: var(--mono); font-size: 10px; font-weight: 700;
+    padding: 2px 7px; border-radius: 4px; letter-spacing: .04em;
+    background: color-mix(in srgb, var(--blue) 15%, transparent);
+    color: var(--blue); border: 1px solid color-mix(in srgb, var(--blue) 30%, transparent);
+  }
+  .mode-badge.dispatch {
+    background: color-mix(in srgb, var(--purple) 15%, transparent);
+    color: var(--purple); border-color: color-mix(in srgb, var(--purple) 30%, transparent);
+  }
+  .ratelimit-chip {
+    font-size: 11px; color: var(--muted); font-family: var(--mono);
+  }
+
   /* ── Toast ── */
   #toast-container {
     position: fixed; bottom: 20px; right: 20px; z-index: 200;
@@ -253,6 +280,9 @@
     </div>
     <div class="section-title">Backends</div>
     <div id="backends"><!-- injected --></div>
+
+    <div class="section-title">Profiles</div>
+    <div id="profiles"><!-- injected --></div>
 
     <div id="stats">
       <div class="stat-chip">
@@ -372,7 +402,7 @@ async function refreshConfig() {
   const data = await get('/admin/config');
   const backends = data.backends || [];
 
-  document.getElementById('backends').innerHTML = backends.map(b => {
+    document.getElementById('backends').innerHTML = backends.map(b => {
     const provider = b.provider || 'openai';
     return `
       <div class="backend-card">
@@ -383,9 +413,26 @@ async function refreshConfig() {
         </div>
         <div class="backend-card-row" style="gap:6px">
           <div class="backend-url" style="flex:1">${esc(b.base_url)}</div>
-          ${b.has_api_key ? '<span style="font-size:11px;color:var(--muted)" title="API key configured">🔑</span>' : ''}
+          ${b.has_api_key ? `<span style="font-size:11px;color:var(--muted)" title="API key: ${esc(b.api_key_source || 'env')}">🔑 <span style="font-family:var(--mono);font-size:10px">${esc(b.api_key_source || 'env')}</span></span>` : ''}
         </div>        <div class="backend-traffic" id="bt-${esc(b.name)}"></div>      </div>`;
   }).join('');
+
+  const profiles = data.profiles || {};
+  const profileKeys = Object.keys(profiles);
+  document.getElementById('profiles').innerHTML = profileKeys.length
+    ? profileKeys.map(name => {
+        const p = profiles[name];
+        const rpm = p.rate_limit_rpm ? `<span class="ratelimit-chip">${p.rate_limit_rpm} rpm</span>` : '';
+        return `<div class="profile-card">
+          <div class="profile-name">${esc(name)}</div>
+          <div class="profile-meta">
+            <span class="mode-badge ${p.mode === 'dispatch' ? 'dispatch' : ''}">${esc(p.mode)}</span>
+            ${rpm}
+          </div>
+          <div style="font-size:11px;color:var(--muted)">max: <span style="font-family:var(--mono)">${esc(p.max_auto_tier)}</span></div>
+        </div>`;
+      }).join('')
+    : '<span style="color:var(--muted);font-size:13px">No profiles configured.</span>';
 
   // Probe backend health
   try {

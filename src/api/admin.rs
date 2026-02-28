@@ -100,6 +100,9 @@ pub async fn config(State(state): State<Arc<RouterState>>) -> impl IntoResponse 
                 "provider": b.provider.to_string(),
                 "base_url": b.base_url,
                 "has_api_key": b.has_api_key_configured(),
+                "api_key_source": b.api_key_source_type(),
+                // Expose the env var *name* (never the resolved value) for diagnostics.
+                "api_key_env": b.api_key_env,
             })
         })
         .collect();
@@ -127,6 +130,7 @@ pub async fn config(State(state): State<Arc<RouterState>>) -> impl IntoResponse 
                     "classifier": p.classifier,
                     "max_auto_tier": p.max_auto_tier,
                     "expert_requires_flag": p.expert_requires_flag,
+                    "rate_limit_rpm": p.rate_limit_rpm,
                 }),
             )
         })

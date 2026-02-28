@@ -367,6 +367,17 @@ impl BackendConfig {
     pub fn has_api_key_configured(&self) -> bool {
         self.api_key_secret.is_some() || self.api_key_env.is_some()
     }
+
+    /// Returns the source type string (`"env"` or `"file"`) when a key is
+    /// configured, or `None` for keyless backends.
+    pub fn api_key_source_type(&self) -> Option<&'static str> {
+        match &self.api_key_secret {
+            Some(SecretSource::Env { .. }) => Some("env"),
+            Some(SecretSource::File { .. }) => Some("file"),
+            None if self.api_key_env.is_some() => Some("env"),
+            None => None,
+        }
+    }
 }
 
 /// A routing tier — a named combination of backend + model.
