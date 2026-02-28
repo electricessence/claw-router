@@ -23,6 +23,15 @@ A lightweight, single-binary LLM routing gateway in Rust. No Python. No database
 - TOML config under 50 lines for a full production setup
 - Docker image under 15 MB (`scratch` base, static musl binary)
 
+**v0.2 — In progress**
+
+- **Anthropic streaming translation**: on-the-fly SSE event translation — `stream: true` works end-to-end with Anthropic backends
+- **`GET /metrics`**: Prometheus-compatible scrape endpoint on the admin port (all TYPE gauge; ring-buffer windowed stats)
+- **Config hot-reload**: gateway picks up config changes without restart (mtime polling + `POST /admin/reload`)
+- **Request ID tracing**: `X-Request-ID` header propagated or generated per request; unified with traffic log entry IDs
+- **Rate limiting**: per-client-IP token bucket on the client port; configurable RPM via `rate_limit_rpm`
+- **Admin Bearer token auth**: `POST /admin/reload` and all admin routes optionally protected by `Authorization: Bearer <token>` (configured via `admin_token_env`)
+
 ---
 
 ## Short Range
@@ -43,15 +52,7 @@ key_env = "CLIENT_INTERNAL_KEY"
 profile = "expert"
 ```
 
-Use cases: different agents with different budgets, exposing the gateway to a team with per-member keys, charging clients through their own upstream keys.
-
-### Streaming (SSE)
-
-Pass through server-sent event streams from backends that support them. Required for real-time UX — chat interfaces, voice pipelines, anything latency-sensitive.
-
-### `/metrics` — Prometheus scrape endpoint
-
-Expose the ring-buffer stats as a Prometheus-compatible endpoint on the admin port. Pairs with Grafana for production visibility without any external dependency.
+Use cases: different agents with different budgets, exposing the gateway to a team with per-member keys, cost isolation per consumer.
 
 ---
 
@@ -73,7 +74,7 @@ The env var path stays as the default; secret backends are opt-in.
 
 ### Rate limiting
 
-Per-client and per-profile request limits. Token-bucket or sliding-window. Stored in memory — no Redis dependency.
+Per-IP rate limits are now implemented on the client port (token bucket, configurable RPM). Per-profile and per-client-key limits are a future extension once client keys are implemented.
 
 ### Response caching (semantic, opt-in)
 

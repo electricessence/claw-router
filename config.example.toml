@@ -8,6 +8,16 @@ admin_port  = 8081       # Admin API + web UI
 traffic_log_capacity = 500
 log_level = "info"
 
+# Per-client-IP rate limit on the client port (requests per minute).
+# Burst allowance = ceil(rpm / 2). Remove or set to 0 to disable.
+# rate_limit_rpm = 60
+
+# Name of the environment variable whose value is used as the Bearer token
+# required on all admin API requests. When absent, the admin port is open to
+# anyone who can reach it (acceptable when the port is firewalled to trusted
+# hosts only).
+# admin_token_env = "LMG_ADMIN_TOKEN"
+
 # ---------------------------------------------------------------------------
 # Backends — one entry per LLM provider
 # The `provider` field selects the protocol adapter (default: "openai").

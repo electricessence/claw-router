@@ -12,12 +12,18 @@
 use std::time::Duration;
 
 use anyhow::Context;
+use futures_util::StreamExt as _;
 use reqwest::Client;
 use serde_json::Value;
 
+use super::SseStream;
+
 /// Adapter for a locally-running Ollama instance.
 pub struct OllamaAdapter {
+    /// Buffered requests — has the configured request timeout.
     client: Client,
+    /// Streaming requests — no request-level timeout.
+    stream_client: Client,
     base_url: String,
 }
 
@@ -29,7 +35,11 @@ impl OllamaAdapter {
             .build()
             .expect("failed to build reqwest client");
 
-        Self { client, base_url }
+        let stream_client = Client::builder()
+            .build()
+            .expect("failed to build streaming reqwest client");
+
+        Self { client, stream_client, base_url }
     }
 
     /// Forward a chat completions request via Ollama's OpenAI-compat endpoint.
@@ -52,6 +62,24 @@ impl OllamaAdapter {
 
         serde_json::from_str(&text)
             .with_context(|| format!("parsing Ollama response as JSON: {text}"))
+    }
+
+    /// Send `POST /v1/chat/completions` and return an [`SseStream`] for proxying.
+    ///
+    /// The backend response bytes are forwarded verbatim.
+    pub async fn chat_completions_stream(&self, body: Value) -> anyhow::Result<SseStream> {
+        let url = format!("{}/v1/chat/completions", self.base_url);
+        let response = self
+            .stream_client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("POST {url} (streaming)"))?;
+        let stream = response
+            .bytes_stream()
+            .map(|r| r.map_err(anyhow::Error::from));
+        Ok(Box::pin(stream))
     }
 
     /// Probe Ollama's root endpoint (`GET /`) — returns `"Ollama is running"` on success.

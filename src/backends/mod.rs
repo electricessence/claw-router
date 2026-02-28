@@ -14,9 +14,19 @@ pub use anthropic::AnthropicAdapter;
 pub use ollama::OllamaAdapter;
 pub use openai::OpenAIAdapter;
 
+use std::pin::Pin;
+
+use bytes::Bytes;
+use futures_util::Stream;
 use serde_json::Value;
 
 use crate::config::{BackendConfig, Provider};
+
+/// A `Send`-able, heap-allocated SSE byte stream.
+///
+/// Each item is either a chunk of raw SSE data (already in OpenAI wire format)
+/// or an error. The stream terminates when all data has been yielded.
+pub type SseStream = Pin<Box<dyn Stream<Item = anyhow::Result<Bytes>> + Send>>;
 
 /// Unified backend client — enum dispatch over concrete provider adapters.
 ///
@@ -70,6 +80,22 @@ impl BackendClient {
             Self::OpenAI(a) => a.chat_completions(request).await,
             Self::Anthropic(a) => a.chat_completions(request).await,
             Self::Ollama(a) => a.chat_completions(request).await,
+        }
+    }
+
+    /// Forward a streaming request and return an [`SseStream`].
+    ///
+    /// All backends produce OpenAI-compatible SSE output:
+    /// - OpenAI-compatible and Ollama backends proxy bytes verbatim.
+    /// - Anthropic backends translate on-the-fly from Anthropic's SSE schema.
+    pub async fn chat_completions_stream(
+        &self,
+        request: Value,
+    ) -> anyhow::Result<SseStream> {
+        match self {
+            Self::OpenAI(a) => a.chat_completions_stream(request).await,
+            Self::Ollama(a) => a.chat_completions_stream(request).await,
+            Self::Anthropic(a) => a.chat_completions_stream(request).await,
         }
     }
 

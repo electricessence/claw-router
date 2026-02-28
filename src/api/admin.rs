@@ -9,8 +9,9 @@ use std::sync::Arc;
 use axum::{
     extract::{Query, State},
     http::{header, StatusCode},
+    middleware,
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -26,6 +27,12 @@ pub fn router(state: Arc<RouterState>) -> Router {
         .route("/admin/traffic", get(traffic))
         .route("/admin/config", get(config))
         .route("/admin/backends/health", get(backends_health))
+        .route("/admin/reload", post(reload))
+        .route("/metrics", get(super::metrics::metrics))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            super::admin_auth::admin_auth_middleware,
+        ))
         .with_state(state)
 }
 
@@ -37,8 +44,8 @@ pub async fn dashboard() -> impl IntoResponse {
 
 /// GET /admin/health — checks liveness + optional backend probes
 pub async fn health(State(state): State<Arc<RouterState>>) -> impl IntoResponse {
-    let tier_count = state.config.tiers.len();
-    let backend_count = state.config.backends.len();
+    let tier_count = state.config().tiers.len();
+    let backend_count = state.config().backends.len();
     Json(json!({
         "status": "ok",
         "tiers": tier_count,
@@ -70,7 +77,7 @@ pub async fn traffic(
 
 /// GET /admin/config — returns the current config with secrets redacted
 pub async fn config(State(state): State<Arc<RouterState>>) -> impl IntoResponse {
-    let cfg = &state.config;
+    let cfg = state.config();
 
     // Redact secrets completely — only expose whether a key is configured
     let backends: Vec<Value> = cfg
@@ -132,7 +139,7 @@ pub async fn config(State(state): State<Arc<RouterState>>) -> impl IntoResponse 
 pub async fn backends_health(State(state): State<Arc<RouterState>>) -> impl IntoResponse {
     let mut results = Vec::new();
 
-    for (name, backend_cfg) in &state.config.backends {
+    for (name, backend_cfg) in &state.config().backends {
         let client = match BackendClient::new(backend_cfg) {
             Ok(c) => c,
             Err(e) => {
@@ -165,6 +172,26 @@ pub async fn backends_health(State(state): State<Arc<RouterState>>) -> impl Into
     (status, Json(json!({ "backends": results })))
 }
 
+/// POST /admin/reload — re-read the config file from disk and apply it live.
+///
+/// The response is `200 OK` on success or `422 Unprocessable Entity` if the
+/// file cannot be parsed. Either way the currently active config is left
+/// unchanged on failure so the gateway keeps running.
+pub async fn reload(State(state): State<Arc<RouterState>>) -> impl IntoResponse {
+    match crate::config::Config::load(&state.config_path) {
+        Ok(new_cfg) => {
+            state.replace_config(Arc::new(new_cfg));
+            tracing::info!("config reloaded via POST /admin/reload");
+            Json(json!({ "status": "reloaded" })).into_response()
+        }
+        Err(e) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -195,6 +222,8 @@ mod tests {
                 admin_port: 8081,
                 traffic_log_capacity: 100,
                 log_level: None,
+                    rate_limit_rpm: None,
+                    admin_token_env: None,
             },
             backends: {
                 let mut m = std::collections::HashMap::new();
@@ -236,6 +265,7 @@ mod tests {
         };
         Arc::new(RouterState::new(
             Arc::new(config),
+            std::path::PathBuf::default(),
             Arc::new(TrafficLog::new(100)),
         ))
     }
@@ -403,3 +433,6 @@ mod tests {
         assert_eq!(backends[0]["status"], "unreachable");
     }
 }
+
+
+

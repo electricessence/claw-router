@@ -11,31 +11,81 @@
 //!   otherwise the next tier up is tried. This minimises cost for simple queries
 //!   at the expense of higher tail latency on hard ones.
 
-use std::sync::Arc;
+use std::{
+    path::PathBuf,
+    sync::{Arc, RwLock},
+};
 
 use anyhow::Context;
 use serde_json::Value;
 use tracing::{debug, warn};
 
 use crate::{
-    backends::BackendClient,
+    api::rate_limit::RateLimiter,
+    backends::{BackendClient, SseStream},
     config::{Config, RoutingMode, TierConfig},
     traffic::{TrafficEntry, TrafficLog},
 };
 
 /// Shared application state injected into every request handler via [`axum::extract::State`].
 pub struct RouterState {
-    /// The validated, parsed configuration loaded at startup.
-    pub config: Arc<Config>,
+    /// Atomically-swappable live config; the lock is held only for the duration
+    /// of `Arc::clone`, so it never blocks request handling.
+    config_lock: Arc<RwLock<Arc<Config>>>,
+    /// Path to the config file on disk — used by the hot-reload background task.
+    pub config_path: PathBuf,
     /// In-memory ring-buffer of recent requests, exposed through the admin API.
     pub traffic: Arc<TrafficLog>,
     /// Gateway start time — used to compute uptime for the public status endpoint.
     pub started_at: std::time::Instant,
+    /// Optional per-IP rate limiter. `None` means rate limiting is disabled.
+    ///
+    /// Note: built once at startup from `config.gateway.rate_limit_rpm`.
+    /// A config hot-reload will NOT update the rate limiter; restart required
+    /// to change the RPM limit at runtime.
+    pub rate_limiter: Option<Arc<RateLimiter>>,
+    /// Bearer token required for admin API access.
+    ///
+    /// `None` means admin auth is disabled (port should then be firewalled).
+    /// Resolved at startup from `config.gateway.admin_token_env`; not
+    /// updated on hot-reload.
+    pub admin_token: Option<String>,
 }
 
 impl RouterState {
-    pub fn new(config: Arc<Config>, traffic: Arc<TrafficLog>) -> Self {
-        Self { config, traffic, started_at: std::time::Instant::now() }
+    pub fn new(config: Arc<Config>, config_path: PathBuf, traffic: Arc<TrafficLog>) -> Self {
+        let rate_limiter = config
+            .gateway
+            .rate_limit_rpm
+            .filter(|&rpm| rpm > 0)
+            .map(|rpm| Arc::new(RateLimiter::new(rpm)));
+        let admin_token = config
+            .gateway
+            .admin_token_env
+            .as_deref()
+            .and_then(|var| std::env::var(var).ok())
+            .filter(|t| !t.is_empty());
+        Self {
+            config_lock: Arc::new(RwLock::new(config)),
+            config_path,
+            traffic,
+            started_at: std::time::Instant::now(),
+            rate_limiter,
+            admin_token,
+        }
+    }
+
+    /// Returns a snapshot of the current live config.
+    ///
+    /// The `RwLock` is held only for the duration of `Arc::clone` (nanoseconds),
+    /// so callers get a stable reference with no contention risk.
+    pub fn config(&self) -> Arc<Config> {
+        self.config_lock.read().expect("config lock poisoned").clone()
+    }
+
+    /// Atomically replaces the live config. Called only from the hot-reload task.
+    pub fn replace_config(&self, new: Arc<Config>) {
+        *self.config_lock.write().expect("config lock poisoned") = new;
     }
 }
 
@@ -58,11 +108,12 @@ pub async fn route(
     state: &RouterState,
     mut request_body: Value,
     profile_name: Option<&str>,
+    request_id: Option<&str>,
     stream: bool,
 ) -> anyhow::Result<(Value, TrafficEntry)> {
     let profile_name = profile_name.unwrap_or("default");
-    let profile = state
-        .config
+    let config = state.config();
+    let profile = config
         .profile(profile_name)
         .context("no matching profile and no default profile configured")?;
 
@@ -72,14 +123,12 @@ pub async fn route(
         .and_then(Value::as_str)
         .unwrap_or("hint:fast")
         .to_owned();
-    let resolved_tier = state.config.resolve_tier(&model_hint);
-
+    let resolved_tier = config.resolve_tier(&model_hint);
     let target_tier: &TierConfig = match resolved_tier {
         Some(tier) => tier,
         None => {
             warn!(%model_hint, "unknown model/alias — falling back to classifier tier");
-            state
-                .config
+            config
                 .tiers
                 .iter()
                 .find(|t| t.name == profile.classifier)
@@ -100,13 +149,16 @@ pub async fn route(
 
     // Enrich entry with request-level context only available at route() scope,
     // then record it in the traffic log.
-    let entry = entry
+    let mut entry = entry
         .with_profile(profile_name)
         .with_requested_model(&model_hint)
         .with_routing_mode(match profile.mode {
             RoutingMode::Dispatch => "dispatch",
             RoutingMode::Escalate => "escalate",
         });
+    if let Some(id) = request_id {
+        entry = entry.with_id(id);
+    }
 
     state.traffic.push(entry.clone());
 
@@ -123,8 +175,8 @@ async fn dispatch(
     tier: &TierConfig,
     stream: bool,
 ) -> anyhow::Result<(Value, TrafficEntry)> {
-    let backend_cfg = state
-        .config
+    let config = state.config();
+    let backend_cfg = config
         .backends
         .get(&tier.backend)
         .with_context(|| format!("backend `{}` not in config", tier.backend))?;
@@ -158,18 +210,18 @@ async fn escalate(
     profile: &crate::config::ProfileConfig,
     stream: bool,
 ) -> anyhow::Result<(Value, TrafficEntry)> {
+    let config = state.config();
     // Collect candidate tiers up to max_auto_tier
-    let max_idx = state
-        .config
+    let max_idx = config
         .tiers
         .iter()
         .position(|t| t.name == profile.max_auto_tier)
-        .unwrap_or(state.config.tiers.len() - 1);
+        .unwrap_or(config.tiers.len() - 1);
 
-    let candidates: Vec<&TierConfig> = state.config.tiers[..=max_idx].iter().collect();
+    let candidates: Vec<&TierConfig> = config.tiers[..=max_idx].iter().collect();
 
     for (tier_idx, tier) in candidates.iter().enumerate() {
-        let backend_cfg = match state.config.backends.get(&tier.backend) {
+        let backend_cfg = match config.backends.get(&tier.backend) {
             Some(b) => b,
             None => continue,
         };
@@ -209,6 +261,80 @@ async fn escalate(
 
     // Exhausted all tiers — last resort: use the final candidate anyway
     anyhow::bail!("all tiers exhausted without a sufficient response")
+}
+
+/// Route a streaming `/v1/chat/completions` request.
+///
+/// Streaming bypasses escalation — the first matching tier is dispatched to
+/// directly, and the backend's SSE output is returned as an [`SseStream`].
+/// All backends produce OpenAI-compatible SSE: OpenAI-compatible and Ollama
+/// backends proxy bytes verbatim; Anthropic translates on-the-fly.
+#[tracing::instrument(skip(state, request_body), fields(profile = profile_name.unwrap_or("default")))]
+pub async fn route_stream(
+    state: &RouterState,
+    mut request_body: Value,
+    profile_name: Option<&str>,
+    request_id: Option<&str>,
+) -> anyhow::Result<(SseStream, TrafficEntry)> {
+    let profile_name = profile_name.unwrap_or("default");
+    let config = state.config();
+    let profile = config
+        .profile(profile_name)
+        .context("no matching profile and no default profile configured")?;
+
+    let model_hint = request_body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("hint:fast")
+        .to_owned();
+
+    let resolved_tier = config.resolve_tier(&model_hint);
+    let target_tier: &TierConfig = match resolved_tier {
+        Some(tier) => tier,
+        None => {
+            warn!(%model_hint, "unknown model/alias — falling back to classifier tier");
+            config
+                .tiers
+                .iter()
+                .find(|t| t.name == profile.classifier)
+                .context("classifier tier not found")?
+        }
+    };
+
+    let backend_cfg = config
+        .backends
+        .get(&target_tier.backend)
+        .with_context(|| format!("backend `{}` not in config", target_tier.backend))?;
+
+    if let Some(obj) = request_body.as_object_mut() {
+        obj.insert("model".into(), Value::String(target_tier.model.clone()));
+        obj.insert("stream".into(), Value::Bool(true));
+    }
+
+    debug!(tier = %target_tier.name, backend = %target_tier.backend, "streaming dispatch");
+
+    let client = BackendClient::new(backend_cfg)?;
+    let t0 = std::time::Instant::now();
+    let stream_response = client.chat_completions_stream(request_body).await?;
+    let latency_ms = t0.elapsed().as_millis() as u64;
+
+    // Latency here is time-to-first-byte (connection + headers), not full response.
+    let mut entry = TrafficEntry::new(
+        target_tier.name.clone(),
+        target_tier.backend.clone(),
+        latency_ms,
+        true,
+    )
+    .with_profile(profile_name)
+    .with_requested_model(&model_hint)
+    .with_routing_mode("stream");
+    if let Some(id) = request_id {
+        entry = entry.with_id(id);
+    }
+
+    state.traffic.push(entry.clone());
+
+    Ok((stream_response, entry))
 }
 
 /// Decide whether a backend response is good enough to return or should be escalated.
@@ -329,6 +455,8 @@ mod tests {
                 admin_port: 8081,
                 traffic_log_capacity: 100,
                 log_level: None,
+                rate_limit_rpm: None,
+                admin_token_env: None,
             },
             backends: {
                 let mut m = std::collections::HashMap::new();
@@ -373,7 +501,7 @@ mod tests {
                 m
             },
         };
-        RouterState::new(Arc::new(config), Arc::new(TrafficLog::new(100)))
+        RouterState::new(Arc::new(config), std::path::PathBuf::default(), Arc::new(TrafficLog::new(100)))
     }
 
     fn long_response(content: &str) -> serde_json::Value {
@@ -396,7 +524,7 @@ mod tests {
         let state = mock_state(&server, RoutingMode::Dispatch).await;
         let body = json!({ "model": "hint:fast", "messages": [{"role": "user", "content": "hi"}] });
 
-        let result = route(&state, body, None, false).await;
+        let result = route(&state, body, None, None, false).await;
         assert!(result.is_ok(), "dispatch failed: {:?}", result.err());
 
         let (resp, entry) = result.unwrap();
@@ -420,7 +548,7 @@ mod tests {
         let state = mock_state(&server, RoutingMode::Dispatch).await;
         let body = json!({ "model": "cloud:economy", "messages": [] });
 
-        let (_, entry) = route(&state, body, None, false).await.unwrap();
+        let (_, entry) = route(&state, body, None, None, false).await.unwrap();
         assert_eq!(entry.tier, "cloud:economy");
     }
 
@@ -439,7 +567,7 @@ mod tests {
         let state = mock_state(&server, RoutingMode::Escalate).await;
         let body = json!({ "model": "hint:fast", "messages": [] });
 
-        let (_, entry) = route(&state, body, None, false).await.unwrap();
+        let (_, entry) = route(&state, body, None, None, false).await.unwrap();
         // Should have stopped at the first (cheapest) tier
         assert_eq!(entry.tier, "local:fast");
     }
@@ -458,7 +586,7 @@ mod tests {
         let state = mock_state(&server, RoutingMode::Dispatch).await;
         let body = json!({ "model": "local:fast", "messages": [] });
 
-        route(&state, body, None, false).await.unwrap();
+        route(&state, body, None, None, false).await.unwrap();
 
         let entries = state.traffic.recent(10).await;
         assert_eq!(entries.len(), 1);
@@ -475,12 +603,15 @@ mod tests {
                     admin_port: 8081,
                     traffic_log_capacity: 10,
                     log_level: None,
+                    rate_limit_rpm: None,
+                    admin_token_env: None,
                 },
                 backends: std::collections::HashMap::new(),
                 tiers: vec![],
                 aliases: std::collections::HashMap::new(),
                 profiles: std::collections::HashMap::new(), // no default
             }),
+            std::path::PathBuf::default(),
             Arc::new(TrafficLog::new(10)),
         );
 
@@ -507,7 +638,7 @@ mod tests {
         // "totally:unknown" exists in neither aliases nor tiers — should fall back to classifier
         let body = json!({ "model": "totally:unknown", "messages": [] });
 
-        let (_, entry) = route(&state, body, None, false).await.unwrap();
+        let (_, entry) = route(&state, body, None, None, false).await.unwrap();
         // classifier is "local:fast"
         assert_eq!(entry.tier, "local:fast");
     }

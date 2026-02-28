@@ -7,14 +7,20 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::State,
-    response::IntoResponse,
+    body::Body,
+    extract::{Extension, State},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use serde_json::{json, Value};
 
-use crate::{error::AppError, router::RouterState};
+use crate::{
+    api::request_id::RequestId,
+    backends::SseStream,
+    error::AppError,
+    router::RouterState,
+};
 
 /// Build the client-facing axum router (port 8080).
 pub fn router(state: Arc<RouterState>) -> Router {
@@ -28,14 +34,42 @@ pub fn router(state: Arc<RouterState>) -> Router {
 
 /// `POST /v1/chat/completions` — route a chat request through the tier ladder.
 ///
-/// The `model` field in the request body selects the tier or alias. The router
-/// rewrites it to the backend's actual model name before forwarding.
+/// When `stream: true` is set in the request body, the response is proxied as
+/// a raw SSE stream from the backend (no buffering). Escalation is skipped for
+/// streaming requests — the first matching tier is used directly. All backends
+/// produce OpenAI-compatible SSE (Anthropic is translated on-the-fly).
 pub async fn chat_completions(
     State(state): State<Arc<RouterState>>,
+    request_id_ext: Option<Extension<RequestId>>,
     Json(body): Json<Value>,
-) -> Result<impl IntoResponse, AppError> {
-    let (resp, _entry) = crate::router::route(&state, body, None, false).await?;
-    Ok(Json(resp))
+) -> Result<Response, AppError> {
+    let req_id = request_id_ext.map(|Extension(id)| id.0);
+    let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+
+    if streaming {
+        let (stream, _entry) =
+            crate::router::route_stream(&state, body, None, req_id.as_deref()).await?;
+        return Ok(proxy_sse(stream));
+    }
+
+    let (resp, _entry) =
+        crate::router::route(&state, body, None, req_id.as_deref(), false).await?;
+    Ok(Json(resp).into_response())
+}
+
+/// Proxy an [`SseStream`] to the client as a streaming HTTP response.
+///
+/// Sets `content-type: text/event-stream`, `cache-control: no-cache`, and
+/// `x-accel-buffering: no` (disables nginx buffering when lm-gateway sits
+/// behind a reverse proxy such as Caddy).
+fn proxy_sse(stream: SseStream) -> Response {
+    Response::builder()
+        .status(200)
+        .header("content-type", "text/event-stream")
+        .header("cache-control", "no-cache")
+        .header("x-accel-buffering", "no")
+        .body(Body::from_stream(stream))
+        .expect("proxy_sse: failed to build streaming response")
 }
 
 /// `GET /v1/models` — list available tiers and aliases as model objects.
@@ -43,7 +77,8 @@ pub async fn chat_completions(
 /// Returns an OpenAI-compatible model list so clients can enumerate what
 /// routing targets are available without any out-of-band config.
 pub async fn list_models(State(state): State<Arc<RouterState>>) -> impl IntoResponse {
-    let tiers = state.config.tiers.iter().map(|t| {
+    let config = state.config();
+    let tiers = config.tiers.iter().map(|t| {
         json!({
             "id": t.name,
             "object": "model",
@@ -51,7 +86,7 @@ pub async fn list_models(State(state): State<Arc<RouterState>>) -> impl IntoResp
         })
     });
 
-    let aliases = state.config.aliases.iter().map(|(alias, target)| {
+    let aliases = config.aliases.iter().map(|(alias, target)| {
         json!({
             "id": alias,
             "object": "model",
@@ -98,6 +133,8 @@ mod tests {
                 admin_port: 8081,
                 traffic_log_capacity: 100,
                 log_level: None,
+                    rate_limit_rpm: None,
+                    admin_token_env: None,
             },
             backends: {
                 let mut m = std::collections::HashMap::new();
@@ -144,6 +181,7 @@ mod tests {
         };
         Arc::new(RouterState::new(
             Arc::new(config),
+            std::path::PathBuf::default(),
             Arc::new(TrafficLog::new(100)),
         ))
     }
@@ -273,3 +311,6 @@ mod tests {
         assert!(json["error"].is_string());
     }
 }
+
+
+

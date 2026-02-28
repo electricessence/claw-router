@@ -53,13 +53,13 @@ pub async fn status(State(state): State<Arc<RouterState>>) -> impl IntoResponse 
 
     // Count backends that require a key but don't have one resolved.
     // We expose the count, not the names, to avoid leaking config detail.
-    let unconfigured = state
-        .config
+    let config = state.config();
+    let unconfigured = config
         .backends
         .values()
         .filter(|b| {
             b.api_key_env.is_some()
-                && b.api_key().map(|k| k.is_empty()).unwrap_or(true)
+                && b.api_key().map(|k: String| k.is_empty()).unwrap_or(true)
         })
         .count();
     let ready = unconfigured == 0;
@@ -111,6 +111,8 @@ mod tests {
                 admin_port: 8081,
                 traffic_log_capacity: 100,
                 log_level: None,
+                    rate_limit_rpm: None,
+                    admin_token_env: None,
             },
             backends: std::collections::HashMap::new(),
             tiers: vec![TierConfig {
@@ -133,7 +135,7 @@ mod tests {
                 m
             },
         };
-        Arc::new(RouterState::new(Arc::new(config), Arc::new(TrafficLog::new(100))))
+        Arc::new(RouterState::new(Arc::new(config), std::path::PathBuf::default(), Arc::new(TrafficLog::new(100))))
     }
 
     #[tokio::test]
@@ -223,7 +225,14 @@ mod tests {
             },
         );
         let config = crate::config::Config {
-            log_capacity: 100,
+            gateway: crate::config::GatewayConfig {
+                client_port: 8080,
+                admin_port: 8081,
+                traffic_log_capacity: 100,
+                log_level: None,
+                rate_limit_rpm: None,
+                    admin_token_env: None,
+            },
             backends,
             tiers: vec![],
             aliases: std::collections::HashMap::new(),
@@ -231,6 +240,7 @@ mod tests {
         };
         let state = Arc::new(RouterState::new(
             Arc::new(config),
+            std::path::PathBuf::default(),
             Arc::new(TrafficLog::new(100)),
         ));
 
@@ -256,3 +266,6 @@ mod tests {
         );
     }
 }
+
+
+

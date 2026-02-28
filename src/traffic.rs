@@ -174,6 +174,16 @@ impl TrafficEntry {
         self.error = Some(err.to_string());
         self
     }
+
+    /// Override the auto-generated UUID with a specific ID.
+    ///
+    /// Used to unify the `TrafficEntry` ID with the inbound `X-Request-ID`,
+    /// so the admin traffic view, log output, and client response headers all
+    /// reference the same identifier.
+    pub fn with_id(mut self, id: &str) -> Self {
+        self.id = id.to_string();
+        self
+    }
 }
 
 /// Aggregate statistics derived from all buffered [`TrafficEntry`] records.

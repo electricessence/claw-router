@@ -1,8 +1,8 @@
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use tokio::signal;
-use tracing::info;
+use tracing::{info, warn};
 
 mod api;
 mod backends;
@@ -49,7 +49,14 @@ async fn main() -> anyhow::Result<()> {
     let config = Arc::new(config);
 
     // Build router state
-    let state = Arc::new(router::RouterState::new(Arc::clone(&config), Arc::clone(&traffic_log)));
+    let state = Arc::new(router::RouterState::new(
+        Arc::clone(&config),
+        config_path.clone(),
+        Arc::clone(&traffic_log),
+    ));
+
+    // Spawn hot-reload watcher — polls the config file every 5 seconds
+    tokio::spawn(config_watcher(Arc::clone(&state)));
 
     // Bind client API (agent-facing)
     let client_addr: SocketAddr = format!("0.0.0.0:{}", config.gateway.client_port).parse()?;
@@ -70,11 +77,19 @@ async fn main() -> anyhow::Result<()> {
             .on_response(tower_http::trace::DefaultOnResponse::new().level(tracing::Level::INFO))
     };
 
-    let client_app = api::client::router(Arc::clone(&state)).layer(trace_layer());
-    let admin_app = api::admin::router(Arc::clone(&state)).layer(trace_layer());
+    let client_app = api::client::router(Arc::clone(&state))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            api::rate_limit::rate_limit_middleware,
+        ))
+        .layer(axum::middleware::from_fn(api::request_id::request_id_middleware))
+        .layer(trace_layer());
+    let admin_app = api::admin::router(Arc::clone(&state))
+        .layer(axum::middleware::from_fn(api::request_id::request_id_middleware))
+        .layer(trace_layer());
 
     tokio::select! {
-        result = axum::serve(client_listener, client_app) => {
+        result = axum::serve(client_listener, client_app.into_make_service_with_connect_info::<SocketAddr>()) => {
             result.context("client API server error")?;
         }
         result = axum::serve(admin_listener, admin_app) => {
@@ -125,5 +140,41 @@ async fn healthcheck() -> anyhow::Result<()> {
         std::process::exit(0);
     } else {
         std::process::exit(1);
+    }
+}
+
+/// Background task: polls the config file every 5 seconds and hot-reloads on change.
+///
+/// Uses filesystem `mtime` for change detection — no inotify/kqueue dependencies.
+/// Parse failures are logged and ignored; the running config is unchanged.
+async fn config_watcher(state: Arc<router::RouterState>) {
+    let path = &state.config_path;
+
+    let mut last_mtime = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok();
+
+    // Initial tick fires immediately; skip it so we don't reload on startup.
+    let mut interval = tokio::time::interval(Duration::from_secs(5));
+    interval.tick().await;
+
+    loop {
+        interval.tick().await;
+
+        let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        if mtime == last_mtime {
+            continue;
+        }
+
+        match Config::load(path) {
+            Ok(new_cfg) => {
+                state.replace_config(Arc::new(new_cfg));
+                info!(path = %path.display(), "config hot-reloaded");
+                last_mtime = mtime;
+            }
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "config reload failed — keeping previous config");
+            }
+        }
     }
 }

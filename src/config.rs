@@ -172,6 +172,23 @@ pub struct GatewayConfig {
     /// Log level override (also controlled by `RUST_LOG` env var).
     #[serde(default)]
     pub log_level: Option<String>,
+
+    /// Maximum requests per minute per client IP on the client port.
+    ///
+    /// Leave unset (or set to 0) to disable rate limiting.
+    /// The burst allowance equals half of this value, rounded up,
+    /// so `rate_limit_rpm = 60` allows 60 req/min sustained and up to
+    /// 30 back-to-back requests before the bucket empties.
+    #[serde(default)]
+    pub rate_limit_rpm: Option<u32>,
+
+    /// Environment variable whose value is the Bearer token required for all
+    /// admin API requests. Leave unset to disable admin authentication (only
+    /// recommended when the admin port is strictly firewalled).
+    ///
+    /// Example: `admin_token_env = "LMG_ADMIN_TOKEN"`.
+    #[serde(default)]
+    pub admin_token_env: Option<String>,
 }
 
 /// A named backend (Ollama instance, OpenRouter, Anthropic direct, etc.).

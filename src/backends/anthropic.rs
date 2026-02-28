@@ -18,8 +18,12 @@
 use std::time::Duration;
 
 use anyhow::Context;
+use bytes::Bytes;
+use futures_util::StreamExt as _;
 use reqwest::{Client, header};
 use serde_json::{json, Value};
+
+use super::SseStream;
 
 /// Default max_tokens when the caller omits it. Required by Anthropic; sensible
 /// ceiling for most conversational use-cases.
@@ -30,7 +34,10 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// Adapter for the Anthropic Messages API.
 pub struct AnthropicAdapter {
+    /// Buffered requests — has the configured request timeout.
     client: Client,
+    /// Streaming requests — no request-level timeout.
+    stream_client: Client,
     base_url: String,
 }
 
@@ -50,12 +57,17 @@ impl AnthropicAdapter {
         );
 
         let client = Client::builder()
-            .default_headers(headers)
+            .default_headers(headers.clone())
             .timeout(Duration::from_millis(timeout_ms))
             .build()
             .expect("failed to build reqwest client");
 
-        Self { client, base_url }
+        let stream_client = Client::builder()
+            .default_headers(headers)
+            .build()
+            .expect("failed to build streaming reqwest client");
+
+        Self { client, stream_client, base_url }
     }
 
     /// Translate and forward a chat completions request to `POST /v1/messages`,
@@ -111,6 +123,85 @@ impl AnthropicAdapter {
             response.status()
         );
         Ok(())
+    }
+
+    /// Forward a streaming completions request, translating Anthropic SSE events to
+    /// OpenAI-compatible format on-the-fly.
+    ///
+    /// Anthropic's SSE schema (`content_block_delta`, `message_start`, etc.) differs
+    /// from OpenAI's (`data: {choices:[{delta:{content:"..."}}]}`). This method spawns
+    /// a background task that reads the Anthropic stream, translates each event, and
+    /// forwards the translated bytes through a channel as the returned [`SseStream`].
+    pub async fn chat_completions_stream(&self, request: Value) -> anyhow::Result<SseStream> {
+        let mut anthropic_req = to_anthropic(request)?;
+        // Tell Anthropic we want a streamed response.
+        if let Some(obj) = anthropic_req.as_object_mut() {
+            obj.insert("stream".into(), Value::Bool(true));
+        }
+
+        let url = format!("{}/v1/messages", self.base_url);
+        let response = self
+            .stream_client
+            .post(&url)
+            .json(&anthropic_req)
+            .send()
+            .await
+            .with_context(|| format!("POST {url} (streaming)"))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Anthropic returned HTTP {status}: {text}");
+        }
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<anyhow::Result<Bytes>>(32);
+        let msg_id = uuid::Uuid::new_v4().to_string();
+
+        tokio::spawn(async move {
+            let mut byte_stream = response.bytes_stream();
+            let mut buf = String::new();
+            let mut event_type = String::new();
+            let mut model = String::from("unknown");
+
+            while let Some(chunk) = byte_stream.next().await {
+                match chunk {
+                    Err(e) => {
+                        let _ = tx.send(Err(anyhow::anyhow!(e))).await;
+                        return;
+                    }
+                    Ok(bytes) => {
+                        buf.push_str(&String::from_utf8_lossy(&bytes));
+                        loop {
+                            match buf.find('\n') {
+                                None => break,
+                                Some(pos) => {
+                                    let line = buf[..pos].trim_end_matches('\r').to_string();
+                                    buf.drain(..=pos);
+
+                                    if line.is_empty() {
+                                        event_type.clear();
+                                    } else if let Some(val) = line.strip_prefix("event: ") {
+                                        event_type = val.to_string();
+                                    } else if let Some(data) = line.strip_prefix("data: ") {
+                                        if let Some(out) = translate_sse_event(
+                                            &event_type, data, &msg_id, &mut model,
+                                        ) {
+                                            if tx.send(Ok(Bytes::from(out))).await.is_err() {
+                                                return; // client disconnected
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let _ = tx.send(Ok(Bytes::from("data: [DONE]\n\n"))).await;
+        });
+
+        let stream = futures_util::stream::poll_fn(move |cx| rx.poll_recv(cx));
+        Ok(Box::pin(stream))
     }
 }
 
@@ -207,6 +298,75 @@ pub(crate) fn from_anthropic(resp: Value) -> anyhow::Result<Value> {
             "total_tokens": input_tokens + output_tokens,
         },
     }))
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// SSE stream translation — Anthropic → OpenAI format
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Translate a single Anthropic SSE event into an OpenAI-compatible SSE chunk.
+///
+/// Returns `Some(bytes_to_emit)` for events that map to OpenAI chunks, `None`
+/// for Anthropic-specific events that have no OpenAI equivalent (ping,
+/// `content_block_start`, `content_block_stop`, `message_stop`).
+///
+/// `model` is populated from the first `message_start` event and reused for
+/// all subsequent chunks.
+pub(crate) fn translate_sse_event(
+    event_type: &str,
+    data: &str,
+    msg_id: &str,
+    model: &mut String,
+) -> Option<String> {
+    match event_type {
+        "message_start" => {
+            // Extract the model name from the first event for use in all chunks.
+            if let Ok(v) = serde_json::from_str::<Value>(data) {
+                if let Some(m) = v.pointer("/message/model").and_then(Value::as_str) {
+                    *model = m.to_string();
+                }
+            }
+            let chunk = json!({
+                "id": msg_id,
+                "object": "chat.completion.chunk",
+                "model": &*model,
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": null}],
+            });
+            Some(format!("data: {chunk}\n\n"))
+        }
+        "content_block_delta" => {
+            let v = serde_json::from_str::<Value>(data).ok()?;
+            let text = v.pointer("/delta/text").and_then(Value::as_str)?;
+            let chunk = json!({
+                "id": msg_id,
+                "object": "chat.completion.chunk",
+                "model": &*model,
+                "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": null}],
+            });
+            Some(format!("data: {chunk}\n\n"))
+        }
+        "message_delta" => {
+            let v = serde_json::from_str::<Value>(data).ok()?;
+            // Map Anthropic stop reasons to OpenAI finish reasons.
+            let finish_reason = v
+                .pointer("/delta/stop_reason")
+                .and_then(Value::as_str)
+                .map(|r| match r {
+                    "end_turn" => "stop",
+                    "max_tokens" => "length",
+                    other => other,
+                });
+            let chunk = json!({
+                "id": msg_id,
+                "object": "chat.completion.chunk",
+                "model": &*model,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+            });
+            Some(format!("data: {chunk}\n\n"))
+        }
+        // ping, content_block_start, content_block_stop, message_stop → skip
+        _ => None,
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -357,5 +517,63 @@ mod tests {
         });
         let out = from_anthropic(resp).unwrap();
         assert_eq!(out["id"], "msg_abc");
+    }
+
+    // ── translate_sse_event ───────────────────────────────────────────────────
+
+    #[test]
+    fn translate_message_start_sets_role_and_captures_model() {
+        let mut model = String::from("unknown");
+        let data = json!({
+            "type": "message_start",
+            "message": { "model": "claude-3-5-sonnet-20241022" }
+        })
+        .to_string();
+        let out = translate_sse_event("message_start", &data, "id-1", &mut model).unwrap();
+        assert_eq!(model, "claude-3-5-sonnet-20241022");
+        let chunk: Value = serde_json::from_str(out.trim_start_matches("data: ").trim_end()).unwrap();
+        assert_eq!(chunk["choices"][0]["delta"]["role"], "assistant");
+        assert_eq!(chunk["choices"][0]["delta"]["content"], "");
+    }
+
+    #[test]
+    fn translate_content_block_delta_emits_text() {
+        let mut model = String::from("claude-3-5-haiku");
+        let data = json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": { "type": "text_delta", "text": "Hello!" }
+        })
+        .to_string();
+        let out = translate_sse_event("content_block_delta", &data, "id-2", &mut model).unwrap();
+        let chunk: Value = serde_json::from_str(out.trim_start_matches("data: ").trim_end()).unwrap();
+        assert_eq!(chunk["choices"][0]["delta"]["content"], "Hello!");
+    }
+
+    #[test]
+    fn translate_message_delta_maps_stop_reasons() {
+        for (anthropic, openai) in [("end_turn", "stop"), ("max_tokens", "length")] {
+            let mut model = String::from("m");
+            let data = json!({
+                "type": "message_delta",
+                "delta": { "stop_reason": anthropic },
+            })
+            .to_string();
+            let out = translate_sse_event("message_delta", &data, "id-3", &mut model).unwrap();
+            let chunk: Value =
+                serde_json::from_str(out.trim_start_matches("data: ").trim_end()).unwrap();
+            assert_eq!(chunk["choices"][0]["finish_reason"], openai);
+        }
+    }
+
+    #[test]
+    fn translate_skips_ping_and_housekeeping_events() {
+        let mut model = String::new();
+        for event in ["ping", "content_block_start", "content_block_stop", "message_stop"] {
+            assert!(
+                translate_sse_event(event, "{}", "id", &mut model).is_none(),
+                "{event} should be skipped"
+            );
+        }
     }
 }
