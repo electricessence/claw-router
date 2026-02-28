@@ -1,68 +1,25 @@
 ---
 applyTo: "**"
 ---
-# Phased Commit Procedure — Mandatory for Every Commit
+# Phased Commit --- Mandatory for Every Commit
 
-Every commit follows these phases **in order**. Do not skip, combine, or rush any phase.
+**1 Stage** --- relevant files only; no artifacts, temp files, or unintentional changes.
 
----
+**2 Review** --- adversarial diff check: correct intent, no logic errors or side effects, tests intact, accurate commit message. Anything wrong: unstage, fix, restart.
 
-## Phase 1 — Stage
-
-Stage **only** the files directly relevant to the current task.
-
-**Never stage:**
-- Files you didn't intentionally change
-- Build artifacts, temporary files, editor metadata
-- Anything outside the scope of the current task
-
----
-
-## Phase 2 — Critical Review
-
-Put on the dev-manager hat. Review every staged diff with **adversarial skepticism**:
-
-- Does the change do exactly what was intended — nothing more, nothing less?
-- Are there logic errors, missing error handling, or unintended side effects?
-- Does the change break any tests, invariants, or documented behaviour?
-- Is the commit message accurate and complete?
-
-If anything looks wrong: unstage it, fix it, restart from Phase 1.
-
----
-
-## Phase 3 — Security Audit ⚠️ HIGHEST PRIORITY
-
-This phase is non-negotiable. Scan **every staged file** for:
+**3 Security Audit WARNING** --- scan every staged file:
 
 | Category | Examples |
-|----------|---------|
-| API keys / tokens | `sk-ant-`, `sk-or-`, `Bearer `, `Authorization:` values |
-| Passwords / secrets | Any string that looks like a credential |
-| Hostnames / IPs | Internal server names, LAN IPs, private domain names |
-| SSH paths | Private key paths tied to a specific machine |
-| Personal info | Real names, email addresses, phone numbers, user IDs |
-| Env var values | Actual secret values (env var **names** are OK) |
+|---|---|
+| Keys / tokens | sk-ant-, sk-or-, Bearer, Authorization: values |
+| Passwords / secrets | Any credential-looking string |
+| Hostnames / IPs | Internal names, LAN IPs, private domains |
+| SSH paths | Machine-specific key paths |
+| PII | Names, emails, phone numbers, user IDs |
+| Env var values | Actual secret values (var **names** are OK) |
 
-**If ANY sensitive data is found: do NOT commit.** Remove it, return to Phase 1.
+Any hit: do NOT commit. Remove it, restart from 1.
 
----
+**4 Commit** --- present-tense message (`Add X`, `Fix Y`, `Update Z`). Commit locally.
 
-## Phase 4 — Commit
-
-Once Phases 1–3 are clean:
-
-- Write a clear, concise commit message in present tense (`Add X`, `Fix Y`, `Update Z`)
-- Commit locally: `git commit -m "..."`
-
----
-
-## Phase 5 — Push (REQUIRES EXPLICIT APPROVAL)
-
-**Do NOT push without explicit approval.**
-
-After committing, report:
-- What was committed and on which branch
-- Any open concerns or follow-on work
-
-Then **wait** for confirmation before running `git push`.
+**5 Push - EXPLICIT APPROVAL REQUIRED** --- report commit + concerns, wait for confirmation before `git push`.
