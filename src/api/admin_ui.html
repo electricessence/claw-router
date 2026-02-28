@@ -186,6 +186,40 @@
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
+  /* ── Setup banner ── */
+  #setup-banner {
+    background: color-mix(in srgb, var(--orange) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--orange) 35%, transparent);
+    border-radius: 8px; padding: 10px 16px;
+    margin-bottom: 20px;
+    display: flex; align-items: center; gap: 10px;
+    font-size: 13px;
+  }
+  #setup-banner.hidden { display: none; }
+  #setup-banner strong { color: var(--orange); }
+
+  /* ── Backend traffic row ── */
+  .backend-traffic { font-size: 11px; color: var(--muted); min-height: 14px; font-family: var(--mono); }
+  .backend-traffic.warn { color: var(--orange); }
+  .backend-traffic.bad  { color: var(--red); }
+
+  /* ── Toast ── */
+  #toast-container {
+    position: fixed; bottom: 20px; right: 20px; z-index: 200;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  .toast {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 16px;
+    font-size: 13px; font-weight: 500;
+    box-shadow: 0 4px 16px rgba(0,0,0,.45);
+    animation: toast-in .2s ease;
+    pointer-events: auto;
+  }
+  @keyframes toast-in { from { transform: translateX(30px); opacity: 0; } }
+  .toast.ok   { border-color: var(--green); color: var(--green); }
+  .toast.err  { border-color: var(--red);   color: var(--red);   }
+
   /* ── Buttons ── */
   .btn {
     background: var(--surface); border: 1px solid var(--border);
@@ -208,10 +242,15 @@
     </div>
     <div class="spacer"></div>
     <span id="last-updated"></span>
+    <button class="btn" id="reload-btn" onclick="reloadConfig()">&#x21BA; Reload</button>
     <button class="btn" onclick="openConfig()">Config</button>
   </header>
 
   <main>
+    <div id="setup-banner" class="hidden">
+      <span>&#x26A0;&#xFE0F;</span>
+      <span><strong>Not ready &mdash;</strong> one or more backends have unresolved API keys. Check <code>api_key_env</code> or <code>api_key_secret</code> in your config, then click <strong>&#x21BA;&nbsp;Reload</strong>.</span>
+    </div>
     <div class="section-title">Backends</div>
     <div id="backends"><!-- injected --></div>
 
@@ -257,6 +296,8 @@
     </div>
   </main>
 </div>
+
+<div id="toast-container"></div>
 
 <!-- Config drawer -->
 <div id="config-overlay" onclick="maybeClose(event)">
@@ -315,6 +356,9 @@ async function refreshHealth() {
     const pill = document.getElementById('gw-status');
     pill.className = 'status-pill';
     pill.innerHTML = '<div class="dot"></div><span>online</span>';
+    // Show setup banner when one or more backends have unresolved keys.
+    const banner = document.getElementById('setup-banner');
+    if (banner) banner.classList.toggle('hidden', h.ready !== false);
   } catch {
     const pill = document.getElementById('gw-status');
     pill.className = 'status-pill err';
@@ -340,8 +384,7 @@ async function refreshConfig() {
         <div class="backend-card-row" style="gap:6px">
           <div class="backend-url" style="flex:1">${esc(b.base_url)}</div>
           ${b.has_api_key ? '<span style="font-size:11px;color:var(--muted)" title="API key configured">🔑</span>' : ''}
-        </div>
-      </div>`;
+        </div>        <div class="backend-traffic" id="bt-${esc(b.name)}"></div>      </div>`;
   }).join('');
 
   // Probe backend health
@@ -352,6 +395,15 @@ async function refreshConfig() {
       if (dot) {
         dot.className = 'health-dot ' + (b.status === 'ok' ? 'ok' : 'err');
         dot.title = b.status === 'ok' ? 'reachable' : (b.error || 'unreachable');
+      }
+      // Render traffic-based error rate if we have enough samples.
+      const trafficEl = document.getElementById('bt-' + b.backend);
+      if (trafficEl && b.traffic && b.traffic.window > 0) {
+        const t = b.traffic;
+        const pct = (t.error_rate * 100).toFixed(0);
+        const cls = t.healthy ? '' : (t.error_rate >= 0.7 ? 'bad' : 'warn');
+        trafficEl.className = 'backend-traffic' + (cls ? ' ' + cls : '');
+        trafficEl.textContent = pct + '% errors (' + t.errors + '/' + t.window + ')';
       }
     });
   } catch(_) {}
@@ -405,6 +457,40 @@ async function refreshTraffic() {
       <td>${tag}</td>
     </tr>`;
   }).join('');
+}
+
+// ── Toast ────────────────────────────────────────────────────────────────────
+
+function showToast(msg, type) {
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = 'toast ' + (type || 'info');
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+
+// ── Reload ────────────────────────────────────────────────────────────────────
+
+async function reloadConfig() {
+  const btn = document.getElementById('reload-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Reloading…'; }
+  try {
+    const r = await fetch(BASE + '/admin/reload', { method: 'POST' });
+    if (r.ok) {
+      showToast('Config reloaded ✓', 'ok');
+      configLoaded = false; // invalidate Config drawer cache
+      await refreshConfig();
+      await refreshHealth(); // re-evaluate ready state
+    } else {
+      const j = await r.json().catch(() => ({}));
+      showToast('Reload failed: ' + (j.error || r.statusText), 'err');
+    }
+  } catch(e) {
+    showToast('Reload error: ' + e.message, 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↺ Reload'; }
+  }
 }
 
 // ── Config drawer ────────────────────────────────────────────────────────────

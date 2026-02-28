@@ -44,10 +44,21 @@ pub async fn dashboard() -> impl IntoResponse {
 
 /// GET /admin/health — checks liveness + optional backend probes
 pub async fn health(State(state): State<Arc<RouterState>>) -> impl IntoResponse {
-    let tier_count = state.config().tiers.len();
-    let backend_count = state.config().backends.len();
+    let cfg = state.config();
+    let tier_count = cfg.tiers.len();
+    let backend_count = cfg.backends.len();
+    // Count backends that have a key source configured but couldn't resolve it.
+    let unconfigured = cfg
+        .backends
+        .values()
+        .filter(|b| {
+            b.has_api_key_configured()
+                && b.api_key().map(|k: String| k.is_empty()).unwrap_or(true)
+        })
+        .count();
     Json(json!({
         "status": "ok",
+        "ready": unconfigured == 0,
         "tiers": tier_count,
         "backends": backend_count,
     }))
