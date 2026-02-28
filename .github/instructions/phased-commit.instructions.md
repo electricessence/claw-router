@@ -18,8 +18,8 @@ applyTo: "**"
 | PII | Names, emails, phone numbers, user IDs |
 | Env var values | Actual secret values (var **names** are OK) |
 
-Any hit: do NOT commit. Remove it, restart from 1.
+Any hit: remove it and restart from 1 before committing.
 
 **4 Commit** --- present-tense message (`Add X`, `Fix Y`, `Update Z`). Commit locally.
 
-**5 Push - EXPLICIT APPROVAL REQUIRED** --- report commit + concerns, wait for confirmation before `git push`.
+**5 Push - EXPLICIT APPROVAL REQUIRED** --- always get approval before `git push`; report commit + concerns and wait for confirmation.
