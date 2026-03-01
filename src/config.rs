@@ -478,25 +478,23 @@ pub struct ProfileConfig {
 /// qwen3:1.7b).  Override per-profile with `classifier_prompt` if your workload
 /// or model needs a different rubric.
 pub const DEFAULT_CLASSIFIER_PROMPT: &str = "\
-You are a request router. Reply with one word: instant, fast, or deep.\n\
+You are a request router for a Home Assistant voice/chat assistant.\n\
+Reply with one word only.\n\
+Labels: instant, instant-think, fast, fast-think, deep, deep-think\n\
 \n\
-- instant: single value or one-sentence fact (greetings, arithmetic, yes/no, \
-simple lookups: capitals, temperatures, currency conversions)\n\
-- fast: needs a paragraph or code snippet (define/explain a concept or technology, \
-write a function or regex, fix a common well-known bug, summarize a topic)\n\
-- deep: requires extended effort (architect or design a system, implement a data \
-structure or algorithm from scratch, debug a language-specific or obscure error \
-such as Rust lifetimes, analyze tradeoffs, multi-step research)\n\
+Tier = how much output is needed:\n\
+  instant = one sentence   |   fast = one paragraph   |   deep = multiple paragraphs\n\
 \n\
-Decision rules:\n\
-- Single-fact lookup -> instant regardless of domain\n\
-- Writing any piece of code -> at least fast\n\
-- Explaining what X is/does -> fast\n\
-- Implementing a data structure or algorithm -> deep\n\
-- Debugging a language-specific feature (e.g. Rust lifetimes, ownership, borrowing) -> deep\n\
-- Architecture tasks (architect/design/build a system) -> deep\n\
-- Tradeoff analysis -> deep\n\
-- When uncertain between two tiers, choose the lower one (fast beats deep, instant beats fast).\n\
+Add -think ONLY when the model must reason to find the correct answer.\n\
+Do NOT add -think for commands or factual responses — even if the request is ambiguous.\n\
+\n\
+  -think YES: creating automation YAML from requirements\n\
+  -think YES: debugging why an automation behaves incorrectly\n\
+  -think YES: designing or refactoring a complex automation\n\
+  -think NO: device commands (\"turn on\", \"lock\", \"set temp\", \"dim to X\")\n\
+  -think NO: state queries (\"is the door locked?\", \"what is the temperature?\")\n\
+  -think NO: ambiguous commands (model asks one clarifying question)\n\
+  -think NO: definitions or factual answers\n\
 \n\
 Reply with one word only.";
 

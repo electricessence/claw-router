@@ -172,9 +172,13 @@ impl std::fmt::Display for ClassLabel {
 /// Parse a classification label from the classifier's response.
 ///
 /// Looks at the first whitespace-delimited token in the response content and
-/// normalises it. Numeric labels (`1`/`2`/`3`) and common synonyms are also
-/// accepted. Returns `Moderate` if the token is unrecognised (safe middle ground).
-fn parse_classification_label(response: &Value) -> ClassLabel {
+/// normalises it. The `-think` suffix (e.g. `fast-think`, `deep-think`) signals
+/// that chain-of-thought reasoning should be enabled for this specific request,
+/// overriding the tier's default `think` setting.
+///
+/// Numeric labels (`1`/`2`/`3`) and common synonyms are also accepted.
+/// Returns `(Moderate, None)` if the token is unrecognised (safe middle ground).
+fn parse_classification_label(response: &Value) -> (ClassLabel, Option<bool>) {
     let content = response
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
@@ -187,9 +191,16 @@ fn parse_classification_label(response: &Value) -> ClassLabel {
         .next()
         .unwrap_or("")
         // Strip leading/trailing punctuation so "simple." or "[complex]" still match.
-        .trim_matches(|c: char| !c.is_alphanumeric());
+        .trim_matches(|c: char| !c.is_alphanumeric() && c != '-');
 
-    match first {
+    // Detect the -think suffix: fast-think, deep-think, instant-think, etc.
+    let (base, think_override) = if let Some(stripped) = first.strip_suffix("-think") {
+        (stripped, Some(true))
+    } else {
+        (first, None)
+    };
+
+    let label = match base {
         "simple" | "1" | "easy" | "basic" | "trivial" | "low" | "instant" => ClassLabel::Simple,
         "moderate" | "2" | "medium" | "normal" | "mid" | "fast" => ClassLabel::Moderate,
         "complex" | "3" | "hard" | "difficult" | "expert" | "high" | "deep" => ClassLabel::Complex,
@@ -197,7 +208,9 @@ fn parse_classification_label(response: &Value) -> ClassLabel {
             debug!(label = other, "unrecognised classification label — defaulting to moderate");
             ClassLabel::Moderate
         }
-    }
+    };
+
+    (label, think_override)
 }
 
 // ---------------------------------------------------------------------------
@@ -390,10 +403,11 @@ async fn dispatch(
     if let Some(obj) = body.as_object_mut() {
         obj.insert("model".into(), Value::String(tier.model.clone()));
         obj.insert("stream".into(), Value::Bool(stream));
-        // If the tier specifies a think preference, enforce it.
-        // This disables chain-of-thought for fast tiers and enables it for deep tiers.
+        // Inject the tier's think preference, but only as a fallback —
+        // a per-request think override set by the classifier (via -think labels)
+        // may already be present and takes precedence.
         if let Some(think) = tier.think {
-            obj.insert("think".into(), Value::Bool(think));
+            obj.entry("think").or_insert(Value::Bool(think));
         }
     }
 
@@ -612,15 +626,15 @@ async fn classify_and_dispatch(
     });
 
     let client = BackendClient::new(&backend_cfg)?;
-    let label = match client.chat_completions(classifier_body).await {
+    let (label, think_override) = match client.chat_completions(classifier_body).await {
         Ok(response) => {
-            let label = parse_classification_label(&response);
-            debug!(%label, "classified request");
-            label
+            let (label, think_override) = parse_classification_label(&response);
+            debug!(%label, think_override = ?think_override, "classified request");
+            (label, think_override)
         }
         Err(e) => {
             warn!(err = %e, "classification call failed — defaulting to first tier");
-            ClassLabel::Simple
+            (ClassLabel::Simple, None)
         }
     };
 
@@ -638,6 +652,14 @@ async fn classify_and_dispatch(
         tier = %target_tier.name,
         "classify routing resolved"
     );
+
+    // If the classifier returned a -think label, inject the think override before
+    // dispatching so that dispatch()'s tier-level setting doesn't shadow it.
+    if let Some(t) = think_override {
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("think".into(), Value::Bool(t));
+        }
+    }
 
     dispatch(state, body, target_tier, stream).await
 }
@@ -725,11 +747,11 @@ pub async fn route_stream(
             });
 
             let client = BackendClient::new(&backend_cfg)?;
-            let label = match client.chat_completions(classifier_body).await {
+            let (label, think_override) = match client.chat_completions(classifier_body).await {
                 Ok(r) => parse_classification_label(&r),
                 Err(e) => {
                     warn!(err = %e, "stream classify call failed — defaulting to first tier");
-                    ClassLabel::Simple
+                    (ClassLabel::Simple, None)
                 }
             };
 
@@ -738,7 +760,15 @@ pub async fn route_stream(
                 ClassLabel::Moderate => n / 2,
                 ClassLabel::Complex  => n.saturating_sub(1),
             };
-            debug!(%label, tier = %candidates[idx].name, "stream classify resolved");
+            debug!(%label, think_override = ?think_override, tier = %candidates[idx].name, "stream classify resolved");
+
+            // If the classifier returned a -think label, inject before streaming dispatch.
+            if let Some(t) = think_override {
+                if let Some(obj) = request_body.as_object_mut() {
+                    obj.insert("think".into(), Value::Bool(t));
+                }
+            }
+
             candidates[idx].name.clone()
         } else {
             classifier_tier.name.clone()
@@ -761,8 +791,10 @@ pub async fn route_stream(
     if let Some(obj) = request_body.as_object_mut() {
         obj.insert("model".into(), Value::String(target_tier.model.clone()));
         obj.insert("stream".into(), Value::Bool(true));
+        // Inject the tier's think preference as fallback; per-request overrides
+        // (from -think classifier labels) are already in request_body and take precedence.
         if let Some(think) = target_tier.think {
-            obj.insert("think".into(), Value::Bool(think));
+            obj.entry("think").or_insert(Value::Bool(think));
         }
     }
 
