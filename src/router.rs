@@ -66,6 +66,13 @@ pub struct RouterState {
     /// Not updated on hot-reload; restart required to pick up new client keys.
     pub client_map: HashMap<String, String>,
 
+    /// Fallback profile for unauthenticated requests when `[[clients]]` are configured.
+    ///
+    /// When set, requests without a valid Bearer token are routed to this profile
+    /// instead of receiving a 401. Enables open LAN access alongside keyed clients.
+    /// Not updated on hot-reload.
+    pub public_profile: Option<String>,
+
     /// Per-profile shared rate limiters, keyed by profile name.
     ///
     /// Built at startup from profiles that specify a non-zero `rate_limit_rpm`.
@@ -109,6 +116,10 @@ impl RouterState {
         if !profile_limiters.is_empty() {
             tracing::info!(count = profile_limiters.len(), "loaded per-profile rate limiters");
         }
+        let public_profile = config.gateway.public_profile.clone();
+        if let Some(ref p) = public_profile {
+            tracing::info!(profile = %p, "public (unauthenticated) profile configured");
+        }
         Self {
             config_lock: Arc::new(RwLock::new(config)),
             config_path,
@@ -117,6 +128,7 @@ impl RouterState {
             rate_limiter,
             admin_token,
             client_map,
+            public_profile,
             profile_limiters,
         }
     }

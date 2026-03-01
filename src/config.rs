@@ -233,6 +233,20 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub admin_token_env: Option<String>,
 
+    /// Profile used for requests that carry no (or an unrecognised) Bearer token.
+    ///
+    /// When `[[clients]]` entries are configured and a request arrives without a
+    /// valid key, the gateway falls through to this profile instead of
+    /// returning 401. Set to a restricted profile (e.g. `"default"`) for
+    /// local/LAN access without requiring a key.
+    ///
+    /// When unset, unauthenticated requests are rejected with 401 whenever
+    /// client keys are configured.
+    ///
+    /// Example: `public_profile = "default"`.
+    #[serde(default)]
+    pub public_profile: Option<String>,
+
     /// Number of additional attempts after the first failure (default: 0 = no retry).
     ///
     /// On each retry the gateway waits `retry_delay_ms` (doubled per attempt,
