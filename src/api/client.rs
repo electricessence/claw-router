@@ -22,6 +22,71 @@ use crate::{
     router::RouterState,
 };
 
+/// Classify a backend error into a short, user-readable message.
+///
+/// Inspects the error chain for known patterns (timeouts, HTTP status codes,
+/// missing models) and returns an appropriate explanation. The message is
+/// intentionally terse — it will appear directly in the chat UI.
+fn classify_backend_error(err: &anyhow::Error) -> &'static str {
+    let msg = err.to_string();
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("timed out") || lower.contains("timeout") || lower.contains("elapsed") {
+        "The language model took too long to respond. Please try again."
+    } else if lower.contains("http 404") || lower.contains("not found") {
+        "The requested model isn't available right now. Please check the gateway configuration."
+    } else if lower.contains("http 5") || lower.contains("502") || lower.contains("503") || lower.contains("504") {
+        "The language model backend returned an error. Please try again in a moment."
+    } else if lower.contains("connection refused") || lower.contains("connect error") {
+        "Cannot reach the language model backend. Please try again later."
+    } else if lower.contains("no profile") || lower.contains("unknown profile") || lower.contains("not configured") {
+        "No routing profile is configured for this request."
+    } else {
+        "Something went wrong while processing your request. Please try again."
+    }
+}
+
+/// Build an OpenAI-compatible chat completion response carrying an error message.
+///
+/// Returns HTTP 200 with a valid `chat.completion` object so that clients
+/// such as Home Assistant Assist render the message in the chat UI instead
+/// of showing a generic "Oops" error dialog.
+fn error_openai_response(err: &anyhow::Error, model: &str) -> Value {
+    let text = classify_backend_error(err);
+    tracing::warn!(error = %err, user_message = text, "returning error as chat response");
+    json!({
+        "id":      "chatcmpl-error",
+        "object":  "chat.completion",
+        "created": chrono::Utc::now().timestamp(),
+        "model":   model,
+        "choices": [{
+            "index":   0,
+            "message": { "role": "assistant", "content": text },
+            "finish_reason": "stop"
+        }],
+        "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
+    })
+}
+
+/// Build an Ollama-compatible chat response carrying an error message.
+///
+/// Same intent as [`error_openai_response`] but in the Ollama wire format
+/// used by `POST /api/chat`.
+fn error_ollama_response(err: &anyhow::Error, model: &str) -> Value {
+    let text = classify_backend_error(err);
+    tracing::warn!(error = %err, user_message = text, "returning error as ollama chat response");
+    json!({
+        "model":      model,
+        "created_at": chrono::Utc::now().to_rfc3339(),
+        "message":    { "role": "assistant", "content": text },
+        "done":       true,
+        "done_reason": "stop",
+        "total_duration":    0,
+        "load_duration":     0,
+        "prompt_eval_count": 0,
+        "eval_count":        0
+    })
+}
+
 /// Build the client-facing axum router (port 8080).
 pub fn router(state: Arc<RouterState>) -> Router {
     Router::new()
@@ -78,15 +143,23 @@ pub async fn chat_completions(
         }
     }
 
+    let model_name = body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("lm-gateway")
+        .to_owned();
+
     if streaming {
-        let (stream, _entry) =
-            crate::router::route_stream(&state, body, profile.as_deref(), req_id.as_deref(), expert_gate).await?;
-        return Ok(proxy_sse(stream));
+        match crate::router::route_stream(&state, body, profile.as_deref(), req_id.as_deref(), expert_gate).await {
+            Ok((stream, _entry)) => return Ok(proxy_sse(stream)),
+            Err(e) => return Ok(Json(error_openai_response(&e, &model_name)).into_response()),
+        }
     }
 
-    let (resp, _entry) =
-        crate::router::route(&state, body, profile.as_deref(), req_id.as_deref(), false, expert_gate).await?;
-    Ok(Json(resp).into_response())
+    match crate::router::route(&state, body, profile.as_deref(), req_id.as_deref(), false, expert_gate).await {
+        Ok((resp, _entry)) => Ok(Json(resp).into_response()),
+        Err(e) => Ok(Json(error_openai_response(&e, &model_name)).into_response()),
+    }
 }
 
 /// Proxy an [`SseStream`] to the client as a streaming HTTP response.
@@ -237,33 +310,39 @@ pub async fn chat_completions_ollama(
 
     let effective_profile = profile_override.as_deref().or(profile.as_deref());
 
+    let model_name = body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("lm-gateway")
+        .to_owned();
+
     if streaming {
-        let (stream, _entry) = crate::router::route_stream(
+        match crate::router::route_stream(
             &state,
             openai_body,
             effective_profile,
             req_id.as_deref(),
             expert_gate,
         )
-        .await?;
-        // Translate OpenAI SSE stream → Ollama NDJSON stream.
-        let model_name = body
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or("lm-gateway")
-            .to_owned();
-        let ndjson = sse_to_ollama_ndjson(model_name, stream);
-        return Ok(axum::response::Response::builder()
-            .header("content-type", "application/x-ndjson")
-            .header("cache-control", "no-cache")
-            .header("x-accel-buffering", "no")
-            .body(Body::from_stream(ndjson))
-            .expect("ollama_chat: failed to build streaming response"));
+        .await
+        {
+            Ok((stream, _entry)) => {
+                // Translate OpenAI SSE stream → Ollama NDJSON stream.
+                let ndjson = sse_to_ollama_ndjson(model_name.clone(), stream);
+                return Ok(axum::response::Response::builder()
+                    .header("content-type", "application/x-ndjson")
+                    .header("cache-control", "no-cache")
+                    .header("x-accel-buffering", "no")
+                    .body(Body::from_stream(ndjson))
+                    .expect("ollama_chat: failed to build streaming response"));
+            }
+            Err(e) => return Ok(Json(error_ollama_response(&e, &model_name)).into_response()),
+        }
     }
 
     // Non-streaming path: route and convert response.
     openai_body["stream"] = json!(false);
-    let (response, _entry) = crate::router::route(
+    let response = match crate::router::route(
         &state,
         openai_body,
         effective_profile,
@@ -271,12 +350,13 @@ pub async fn chat_completions_ollama(
         false,
         expert_gate,
     )
-    .await?;
+    .await
+    {
+        Ok((r, _entry)) => r,
+        Err(e) => return Ok(Json(error_ollama_response(&e, &model_name)).into_response()),
+    };
 
-    let model_name = body
-        .get("model")
-        .and_then(Value::as_str)
-        .unwrap_or("lm-gateway");
+    let model_name = model_name.as_str();
     let content = response
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
