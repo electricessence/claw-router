@@ -405,6 +405,12 @@ pub struct TierConfig {
 
     /// Model name to send to the backend.
     pub model: String,
+
+    /// If set, inject `"think": <value>` into every request forwarded to this tier.
+    /// Primarily for Ollama backends: `false` disables chain-of-thought (faster),
+    /// `true` enables it (slower but deeper reasoning). Absent = no injection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub think: Option<bool>,
 }
 
 /// Routing profile — controls routing behaviour for a client.
@@ -593,6 +599,7 @@ mod tests {
             name: "bad:tier".into(),
             backend: "nonexistent".into(),
             model: "x".into(),
+            think: None,
         });
         assert!(config.validate().is_err());
     }

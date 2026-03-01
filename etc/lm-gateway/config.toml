@@ -24,16 +24,19 @@ base_url = "http://127.0.0.1:11434"
 name    = "local:instant"
 backend = "ollama"
 model   = "qwen3:1.7b"
+think   = false
 
 [[tiers]]
 name    = "local:balanced"
 backend = "ollama"
 model   = "qwen3:8b"
+think   = false
 
 [[tiers]]
 name    = "local:expert"
 backend = "ollama"
 model   = "qwen3:14b"
+think   = true
 
 # ---------------------------------------------------------------------------
 # Profiles — these are the "models" Ollama clients see in /api/tags

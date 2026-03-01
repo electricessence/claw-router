@@ -124,6 +124,7 @@ mod tests {
                 name: "local:fast".into(),
                 backend: "mock".into(),
                 model: "fast-model".into(),
+                think: None,
             }],
             aliases: std::collections::HashMap::new(),
             profiles: {

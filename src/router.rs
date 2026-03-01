@@ -390,6 +390,11 @@ async fn dispatch(
     if let Some(obj) = body.as_object_mut() {
         obj.insert("model".into(), Value::String(tier.model.clone()));
         obj.insert("stream".into(), Value::Bool(stream));
+        // If the tier specifies a think preference, enforce it.
+        // This disables chain-of-thought for fast tiers and enables it for deep tiers.
+        if let Some(think) = tier.think {
+            obj.insert("think".into(), Value::Bool(think));
+        }
     }
 
     let max_retries = config.gateway.max_retries.unwrap_or(0);
@@ -601,6 +606,7 @@ async fn classify_and_dispatch(
             { "role": "user",   "content": &user_text   }
         ],
         "stream": false,
+        "think": false,
         "max_tokens": 10,
         "temperature": 0.0
     });
@@ -713,6 +719,7 @@ pub async fn route_stream(
                     { "role": "user",   "content": &user_text   }
                 ],
                 "stream": false,
+                "think": false,
                 "max_tokens": 10,
                 "temperature": 0.0
             });
@@ -754,6 +761,9 @@ pub async fn route_stream(
     if let Some(obj) = request_body.as_object_mut() {
         obj.insert("model".into(), Value::String(target_tier.model.clone()));
         obj.insert("stream".into(), Value::Bool(true));
+        if let Some(think) = target_tier.think {
+            obj.insert("think".into(), Value::Bool(think));
+        }
     }
 
     debug!(tier = %target_tier.name, backend = %target_tier.backend, "streaming dispatch");
@@ -935,11 +945,13 @@ mod tests {
                     name: "local:fast".into(),
                     backend: "mock".into(),
                     model: "fast-model".into(),
+                    think: None,
                 },
                 TierConfig {
                     name: "cloud:economy".into(),
                     backend: "mock".into(),
                     model: "economy-model".into(),
+                    think: None,
                 },
             ],
             aliases: {

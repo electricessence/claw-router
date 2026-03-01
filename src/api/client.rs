@@ -511,11 +511,13 @@ mod tests {
                     name: "local:fast".into(),
                     backend: "mock".into(),
                     model: "fast-model".into(),
+                    think: None,
                 },
                 TierConfig {
                     name: "cloud:economy".into(),
                     backend: "mock".into(),
                     model: "economy-model".into(),
+                    think: None,
                 },
             ],
             aliases: {
