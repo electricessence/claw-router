@@ -641,6 +641,22 @@ async fn classify_and_dispatch(
 
     // Map label → tier index.
     let n = candidates.len();
+    // If the conversation contains a tool-result, the model must synthesise
+    // external data.  Bump Simple → Moderate to avoid routing to the tiny
+    // instant-tier model.
+    let has_tool_result = body
+        .pointer("/messages")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().any(|m| {
+            m.get("role").and_then(Value::as_str) == Some("tool")
+        }))
+        .unwrap_or(false);
+    let label = if has_tool_result && matches!(label, ClassLabel::Simple) {
+        debug!("tool-result in conversation — bumping Simple → Moderate");
+        ClassLabel::Moderate
+    } else {
+        label
+    };
     let tier_idx = match label {
         ClassLabel::Simple   => 0,
         ClassLabel::Moderate => n / 2,
@@ -755,6 +771,24 @@ pub async fn route_stream(
                     warn!(err = %e, "stream classify call failed — defaulting to first tier");
                     (ClassLabel::Simple, None)
                 }
+            };
+
+            // If the conversation already contains a tool-result message the model
+            // must synthesise external data, which requires more capability than the
+            // original user query implies.  Bump Simple → Moderate so the tiny
+            // instant-tier model isn't asked to process multi-turn tool use.
+            let has_tool_result = request_body
+                .pointer("/messages")
+                .and_then(Value::as_array)
+                .map(|arr| arr.iter().any(|m| {
+                    m.get("role").and_then(Value::as_str) == Some("tool")
+                }))
+                .unwrap_or(false);
+            let label = if has_tool_result && matches!(label, ClassLabel::Simple) {
+                debug!("tool-result in conversation — bumping Simple → Moderate");
+                ClassLabel::Moderate
+            } else {
+                label
             };
 
             let idx = match label {
