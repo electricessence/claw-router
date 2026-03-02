@@ -8,7 +8,7 @@ traffic_log_capacity = 500
 log_level            = "info"
 admin_token_env      = "LMG_ADMIN_TOKEN"
 # Unauthenticated LAN requests fall through to this profile instead of 401.
-public_profile       = "default"
+public_profile       = "ha-auto"
 
 # ---------------------------------------------------------------------------
 # Backend — local Ollama on the same container
