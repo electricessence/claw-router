@@ -82,6 +82,51 @@ impl OllamaAdapter {
         Ok(Box::pin(stream))
     }
 
+    /// Send a classification request via Ollama's native `/api/chat` endpoint.
+    ///
+    /// The native path honours Ollama-specific request fields such as `think`,
+    /// which the OpenAI-compat `/v1/chat/completions` endpoint silently ignores.
+    /// Returns an OpenAI-compat response shape so the caller can use the same
+    /// [`parse_classification_label`] logic.
+    ///
+    /// [`parse_classification_label`]: crate::router::parse_classification_label
+    pub async fn classify(&self, body: Value) -> anyhow::Result<Value> {
+        let url = format!("{}/api/chat", self.base_url);
+        let response = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+
+        let status = response.status();
+        let text = response.text().await.context("reading Ollama native response body")?;
+
+        if !status.is_success() {
+            anyhow::bail!("Ollama returned HTTP {status}: {text}");
+        }
+
+        let native: Value = serde_json::from_str(&text)
+            .with_context(|| format!("parsing Ollama native response as JSON: {text}"))?;
+
+        // Convert native /api/chat shape → OpenAI-compat so parse_classification_label works.
+        let content = native
+            .pointer("/message/content")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+
+        Ok(serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": content
+                }
+            }]
+        }))
+    }
+
     /// Probe Ollama's root endpoint (`GET /`) — returns `"Ollama is running"` on success.
     pub async fn health_check(&self) -> anyhow::Result<()> {
         let url = format!("{}/", self.base_url);

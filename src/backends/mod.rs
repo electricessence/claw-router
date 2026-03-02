@@ -98,6 +98,18 @@ impl BackendClient {
         }
     }
 
+    /// Send a classification request to the backend.
+    ///
+    /// For Ollama backends this routes to the native `/api/chat` endpoint so
+    /// that Ollama-specific request fields (e.g. `think`) are honoured.
+    /// Other backends fall back to the standard `/v1/chat/completions` path.
+    pub async fn classify(&self, request: Value) -> anyhow::Result<Value> {
+        match self {
+            Self::Ollama(a) => a.classify(request).await,
+            _ => self.chat_completions(request).await,
+        }
+    }
+
     /// Probe this backend for liveness. Implementation varies by provider.
     pub async fn health_check(&self) -> anyhow::Result<()> {
         match self {

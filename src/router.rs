@@ -626,7 +626,7 @@ async fn classify_and_dispatch(
     });
 
     let client = BackendClient::new(&backend_cfg)?;
-    let (label, think_override) = match client.chat_completions(classifier_body).await {
+    let (label, think_override) = match client.classify(classifier_body).await {
         Ok(response) => {
             let (label, think_override) = parse_classification_label(&response);
             debug!(%label, think_override = ?think_override, "classified request");
@@ -747,7 +747,7 @@ pub async fn route_stream(
             });
 
             let client = BackendClient::new(&backend_cfg)?;
-            let (label, think_override) = match client.chat_completions(classifier_body).await {
+            let (label, think_override) = match client.classify(classifier_body).await {
                 Ok(r) => parse_classification_label(&r),
                 Err(e) => {
                     warn!(err = %e, "stream classify call failed — defaulting to first tier");
