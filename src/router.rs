@@ -621,8 +621,10 @@ async fn classify_and_dispatch(
         ],
         "stream": false,
         "think": false,
-        "max_tokens": 10,
-        "temperature": 0.0
+        // num_predict and temperature go in options for Ollama native /api/chat;
+        // max_tokens / temperature are OpenAI-compat fields that the native
+        // endpoint silently ignores.
+        "options": { "num_predict": 5, "temperature": 0 }
     });
 
     let client = BackendClient::new(&backend_cfg)?;
@@ -742,8 +744,8 @@ pub async fn route_stream(
                 ],
                 "stream": false,
                 "think": false,
-                "max_tokens": 10,
-                "temperature": 0.0
+                // num_predict and temperature go in options for Ollama native /api/chat.
+                "options": { "num_predict": 5, "temperature": 0 }
             });
 
             let client = BackendClient::new(&backend_cfg)?;
