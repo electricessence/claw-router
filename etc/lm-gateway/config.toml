@@ -1,12 +1,12 @@
 # lm-gateway configuration — 5-tier local routing
-# Routes to qwen3:1.7b / qwen2.5:7b-instruct / qwen3:14b (all Q4_K_M) via Ollama
+# Routes to qwen3:1.7b / qwen2.5:7b-instruct / qwen3:14b-q3_K_M via Ollama
 #
 # Classification label ladder (lightest → heaviest):
 #   instant    qwen3:1.7b              think=false   ~300ms   greetings, pure chitchat
 #   fast       qwen3:1.7b              think=true    ~2-4s    simple device cmd needing CoT
 #   moderate   qwen2.5:7b-instruct     think=false   ~2s      single device cmd, clean tool calls
-#   deep       qwen3:14b               think=false   ~5s      state queries, multi-entity, scenes
-#   max        qwen3:14b               think=true    ~30s+    hardest problems + full CoT
+#   deep       qwen3:14b-q3_K_M        think=false   ~5s      state queries, multi-entity, scenes
+#   max        qwen3:14b-q3_K_M        think=true    ~30s+    hardest problems + full CoT
 
 [gateway]
 client_port          = 8080
@@ -35,8 +35,8 @@ timeout_ms  = 300000
 #   instant  → index 0 → local:instant   (qwen3:1.7b)
 #   fast     → index 1 → local:fast      (qwen3:1.7b + think)
 #   moderate → index 2 → local:moderate  (qwen2.5:7b-instruct)
-#   deep     → index 3 → local:deep      (qwen3:14b)
-#   max      → index 4 → local:max       (qwen3:14b + think)
+#   deep     → index 3 → local:deep      (qwen3:14b-q3_K_M)
+#   max      → index 4 → local:max       (qwen3:14b-q3_K_M + think)
 #
 # The classifier's "-think" suffix injects think=true on the elected tier.
 # ---------------------------------------------------------------------------
@@ -61,13 +61,13 @@ think   = false
 [[tiers]]
 name    = "local:deep"
 backend = "ollama"
-model   = "qwen3:14b"
+model   = "qwen3:14b-q3_K_M"
 think   = false
 
 [[tiers]]
 name    = "local:max"
 backend = "ollama"
-model   = "qwen3:14b"
+model   = "qwen3:14b-q3_K_M"
 think   = true
 
 # ---------------------------------------------------------------------------
@@ -103,8 +103,8 @@ profile = "ha-auto"
 #   instant  — pure greeting/chitchat, no home action possible     (qwen3:1.7b)
 #   fast     — simple command needing entity reasoning              (qwen3:1.7b + think)
 #   moderate — single device command, clear intent, tool call       (qwen2.5:7b-instruct)
-#   deep     — state query, multi-entity, scene/routine             (qwen3:14b)
-#   max      — complex scene, multi-step, or ambiguous context      (qwen3:14b + think)
+#   deep     — state query, multi-entity, scene/routine             (qwen3:14b-q3_K_M)
+#   max      — complex scene, multi-step, or ambiguous context      (qwen3:14b-q3_K_M + think)
 [profiles.ha-auto]
 mode              = "classify"
 classifier        = "local:instant"
