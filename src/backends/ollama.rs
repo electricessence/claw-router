@@ -117,6 +117,117 @@ impl OllamaAdapter {
         Ok(Box::pin(stream))
     }
 
+    /// Buffer a tool-call request via Ollama's native `/api/chat` and return a
+    /// synthetic OpenAI-compatible SSE stream.
+    ///
+    /// Ollama's `/v1/chat/completions` compat layer fails to translate
+    /// `<tool_call>` model output to a `tool_calls` JSON array; the native
+    /// `/api/chat` endpoint performs that translation correctly.  The full
+    /// response is buffered — tool calls are not meaningfully streamed — and
+    /// re-emitted as OpenAI SSE chunks so the upstream client (e.g. HA) sees
+    /// the standard OpenAI format.
+    pub async fn tool_call_stream(&self, mut body: Value) -> anyhow::Result<SseStream> {
+        if let Some(obj) = body.as_object_mut() {
+            obj.entry("keep_alive").or_insert(serde_json::json!(-1));
+            obj.insert("stream".into(), serde_json::json!(false));
+        }
+
+        let model = body
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_owned();
+
+        let url = format!("{}/api/chat", self.base_url);
+        let response = self
+            .stream_client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("POST {url} (tool call)"))?;
+
+        let status = response.status();
+        let text = response.text().await.context("reading Ollama native tool response")?;
+
+        if !status.is_success() {
+            anyhow::bail!("Ollama returned HTTP {status}: {text}");
+        }
+
+        let native: Value = serde_json::from_str(&text)
+            .with_context(|| format!("parsing Ollama native tool response: {text}"))?;
+
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let id = format!("chatcmpl-tools-{ts}");
+
+        let message = native.pointer("/message").cloned().unwrap_or(Value::Null);
+        let tool_calls = message.get("tool_calls").and_then(Value::as_array).cloned();
+        let content = message
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+
+        let (delta_first, finish_reason) = if let Some(tc) = tool_calls {
+            // Convert Ollama native tool_calls → OpenAI format.
+            let openai_calls: Vec<Value> = tc
+                .iter()
+                .enumerate()
+                .map(|(i, call)| {
+                    let func = call.get("function").cloned().unwrap_or(Value::Null);
+                    let name = func
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned();
+                    let args = func.get("arguments").cloned().unwrap_or(Value::Null);
+                    let args_str = serde_json::to_string(&args).unwrap_or_default();
+                    serde_json::json!({
+                        "index": i,
+                        "id": format!("call_{i}"),
+                        "type": "function",
+                        "function": { "name": name, "arguments": args_str }
+                    })
+                })
+                .collect();
+            (
+                serde_json::json!({
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": openai_calls
+                }),
+                "tool_calls",
+            )
+        } else {
+            (
+                serde_json::json!({ "role": "assistant", "content": content }),
+                "stop",
+            )
+        };
+
+        let chunk1 = serde_json::json!({
+            "id": id, "object": "chat.completion.chunk", "created": ts, "model": model,
+            "choices": [{"index": 0, "delta": delta_first, "finish_reason": null}]
+        });
+        let chunk2 = serde_json::json!({
+            "id": id, "object": "chat.completion.chunk", "created": ts, "model": model,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}]
+        });
+
+        let parts: Vec<bytes::Bytes> = vec![
+            bytes::Bytes::from(format!("data: {}\n\n", chunk1)),
+            bytes::Bytes::from(format!("data: {}\n\n", chunk2)),
+            bytes::Bytes::from_static(b"data: [DONE]\n\n"),
+        ];
+
+        Ok(Box::pin(futures_util::stream::iter(
+            parts.into_iter().map(Ok::<_, anyhow::Error>),
+        )))
+    }
+
     /// Send a classification request via Ollama's native `/api/chat` endpoint.
     ///
     /// The native path honours Ollama-specific request fields such as `think`,

@@ -117,6 +117,23 @@ impl BackendClient {
         }
     }
 
+    /// Send a tool-call request and return an OpenAI-compatible SSE stream.
+    ///
+    /// For Ollama, routes through the native `/api/chat` endpoint and converts
+    /// the response to a synthetic OpenAI SSE stream, bypassing Ollama's broken
+    /// compat-layer tool-call translation.  All other backends pass through to
+    /// [`chat_completions_stream`] unchanged — they handle tool calls correctly
+    /// via their OpenAI-compat endpoints.
+    pub async fn tool_call_stream(
+        &self,
+        request: Value,
+    ) -> anyhow::Result<(SseStream, bool)> {
+        match self {
+            Self::Ollama(a) => Ok((a.tool_call_stream(request).await?, false)),
+            _ => Ok((self.chat_completions_stream(request).await?, false)),
+        }
+    }
+
     /// Send a classification request to the backend.
     ///
     /// For Ollama backends this routes to the native `/api/chat` endpoint so

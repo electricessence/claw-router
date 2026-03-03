@@ -838,8 +838,21 @@ pub async fn route_stream(
 
     let client = BackendClient::new(backend_cfg)?;
     let t0 = std::time::Instant::now();
+
+    // Detect tool-call requests: Ollama's /v1/chat/completions compat layer fails
+    // to translate <tool_call> output to a tool_calls JSON array.  Route through
+    // the native /api/chat endpoint instead, which does the translation correctly.
+    let has_tools = request_body
+        .pointer("/tools")
+        .and_then(Value::as_array)
+        .map(|t| !t.is_empty())
+        .unwrap_or(false);
+
     let (stream_response, is_native_ndjson) = if use_native {
         client.native_chat_stream(request_body).await?
+    } else if has_tools {
+        debug!("request has tools — routing via native /api/chat to fix tool_call translation");
+        client.tool_call_stream(request_body).await?
     } else {
         (client.chat_completions_stream(request_body).await?, false)
     };
