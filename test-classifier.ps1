@@ -41,18 +41,18 @@ INSTANT — only if:
 Reply with exactly one word: instant or deep.
 "@
 
-    # Proposed 3-tier prompt (instant | fast | deep)
-    # fast = single unambiguous device command (routed to 8b instead of 14b)
+    # Proposed 3-tier prompt (instant | moderate | deep)
+    # moderate = single device command (routed to qwen2.5:7b instead of qwen3:14b)
     # deep = state queries, multi-entity, tool synthesis, ambiguous
     proposed = @"
-Route this Home Assistant request. Reply with one word: instant, fast, or deep.
+Route this Home Assistant request. Reply with one word: instant, moderate, or deep.
 
-  Turn on the kitchen lights                               -> fast
-  Lock the front door                                      -> fast
-  Set the thermostat to 72                                 -> fast
-  Dim the office light to 40%                              -> fast
-  Play music in the bedroom                                -> fast
-  Turn off the TV                                          -> fast
+  Turn on the kitchen lights                               -> moderate
+  Lock the front door                                      -> moderate
+  Set the thermostat to 72                                 -> moderate
+  Dim the office light to 40%                              -> moderate
+  Play music in the bedroom                                -> moderate
+  Turn off the TV                                          -> moderate
   What is the living room temperature?                     -> deep
   What is the temperature outside?                         -> deep
   Are any lights on downstairs?                            -> deep
@@ -70,18 +70,18 @@ Route this Home Assistant request. Reply with one word: instant, fast, or deep.
   What's the capital of France?                            -> instant
   What's 2+2?                                              -> instant
 
-Reply with one word only: instant, fast, or deep.
+Reply with one word only: instant, moderate, or deep.
 "@
 }
 
 # Each case: Q=query, C=expected for current (2-tier), P=expected for proposed (3-tier)
 $Cases = @(
-    # Simple device commands → current:deep, proposed:fast (8b is sufficient)
-    @{ Q = 'Turn on the kitchen lights';                             C = 'deep'; P = 'fast' }
-    @{ Q = 'Lock the front door';                                    C = 'deep'; P = 'fast' }
+    # Simple device commands → current:deep, proposed:moderate (7b is sufficient)
+    @{ Q = 'Turn on the kitchen lights';                             C = 'deep'; P = 'moderate' }
+    @{ Q = 'Lock the front door';                                    C = 'deep'; P = 'moderate' }
     @{ Q = 'Turn off all the lights';                                C = 'deep'; P = 'deep' }  # multi-entity → always deep
-    @{ Q = 'Dim the office light to 40%';                            C = 'deep'; P = 'fast' }
-    @{ Q = 'Set the thermostat to 72';                               C = 'deep'; P = 'fast' }    # State queries — could be fast or deep; fast is acceptable for simple binary queries
+    @{ Q = 'Dim the office light to 40%';                            C = 'deep'; P = 'moderate' }
+    @{ Q = 'Set the thermostat to 72';                               C = 'deep'; P = 'moderate' }    # State queries — could be moderate or deep; moderate is acceptable for simple binary queries
     @{ Q = 'What is the temperature outside?';                       C = 'deep'; P = 'deep' }
     @{ Q = 'Are any lights on downstairs?';                          C = 'deep'; P = 'deep' }
     @{ Q = 'What is the living room temperature?';                   C = 'deep'; P = 'deep' }
@@ -146,7 +146,7 @@ if ($Variant -eq 'debug') {
 
 if ($Variant -eq 'both') {
     Invoke-Suite 'current (2-tier: instant|deep)'        $Prompts['current']  'C'
-    Invoke-Suite 'proposed (3-tier: instant|fast|deep)'  $Prompts['proposed'] 'P'
+    Invoke-Suite 'proposed (3-tier: instant|moderate|deep)'  $Prompts['proposed'] 'P'
 } else {
     $expKey = if ($Variant -eq 'current') { 'C' } else { 'P' }
     Invoke-Suite $Variant $Prompts[$Variant] $expKey

@@ -1,15 +1,13 @@
-# lm-gateway configuration — 3-tier local routing (Haiku / Sonnet / Opus)
-# Routes to qwen3:1.7b (Q4_K_M) / 8b (Q3_K_M) / 14b (Q4_K_M) via Ollama
+# lm-gateway configuration — 3-tier local routing
+# Routes to qwen3:1.7b (Q4_K_M) / qwen2.5:7b-instruct (Q3_K_M) / qwen3:14b (Q4_K_M) via Ollama
 #
-# Classification label ladder (Simple → Moderate → Complex):
-#   instant       qwen3:1.7b      think=false   ~300ms   greetings, trivial facts
-#   instant-think qwen3:1.7b      think=true    ~2s      trivial with mild CoT
-#   moderate      qwen3:8b-q3_K_M think=false   ~2s      general tasks, code, explains
-#   moderate-think qwen3:8b-q3_K_M think=true   ~20s+    moderate + reasoning
-#   deep          qwen3:14b       think=false   ~5s      HA commands, tool calls, complex
-#   deep-think    qwen3:14b       think=true    ~30s+    hardest problems + full CoT
-#
-# Synonym aliases (same routing): haiku=instant, sonnet=moderate, opus=deep
+# Classification label ladder (lightest → heaviest):
+#   instant          qwen3:1.7b                 think=false   ~300ms   greetings, trivial facts
+#   instant-think    qwen3:1.7b                 think=true    ~2s      trivial with mild CoT
+#   moderate         qwen2.5:7b-instruct-q3_K_M think=false   ~2s      device cmds, code, daily tasks (tools OK)
+#   moderate-think   qwen2.5:7b-instruct-q3_K_M think=true    ~15s+    moderate + step-by-step reasoning
+#   deep             qwen3:14b                  think=false   ~5s      complex queries, multi-entity, synthesis
+#   deep-think       qwen3:14b                  think=true    ~30s+    hardest problems + full CoT
 
 [gateway]
 client_port          = 8080
@@ -35,14 +33,14 @@ timeout_ms  = 300000
 # Tiers — ordered by cost/latency (cheapest first)
 #
 # Router index mapping (n=3):
-#   Simple   → index 0 → local:instant  (1.7b)
-#   Moderate → index 1 → local:deep     (8b)
-#   Complex  → index 2 → local:max      (14b)
+#   instant  → index 0 → local:instant   (1.7b)
+#   moderate → index 1 → local:moderate  (7b)
+#   deep     → index 2 → local:deep      (14b)
 #
 # The classifier's "-think" suffix injects think=true on the elected tier:
-#   instant-think  → local:instant + think=true
-#   moderate-think → local:deep    + think=true
-#   deep-think     → local:max     + think=true
+#   instant-think  → local:instant   + think=true
+#   moderate-think → local:moderate  + think=true
+#   deep-think     → local:deep      + think=true
 # ---------------------------------------------------------------------------
 [[tiers]]
 name    = "local:instant"
@@ -51,13 +49,13 @@ model   = "qwen3:1.7b"
 think   = false
 
 [[tiers]]
-name    = "local:deep"
+name    = "local:moderate"
 backend = "ollama"
-model   = "qwen3:8b-q3_K_M"
+model   = "qwen2.5:7b-instruct-q3_K_M"
 think   = false
 
 [[tiers]]
-name    = "local:max"
+name    = "local:deep"
 backend = "ollama"
 model   = "qwen3:14b"
 think   = false
@@ -71,11 +69,11 @@ think   = false
 "ha-auto"        = "local:instant"
 
 # Hint aliases for Open WebUI / other clients.
-"hint:instant"       = "local:instant"
-"hint:deep"          = "local:deep"
-"hint:max"           = "local:max"
-"hint:deep-think"    = "local:deep"
-"hint:max-think"     = "local:max"
+"hint:instant"          = "local:instant"
+"hint:moderate"         = "local:moderate"
+"hint:deep"             = "local:deep"
+"hint:moderate-think"   = "local:moderate"
+"hint:deep-think"       = "local:deep"
 
 # ---------------------------------------------------------------------------
 # Clients — API key → profile bindings (keys loaded from env vars)
@@ -92,22 +90,22 @@ profile = "ha-auto"
 # "ha-auto:latest" — what Home Assistant sees and uses.
 #
 # 3-label classify: qwen3:1.7b pre-flight routes to the right tier.
-#   fast    — single unambiguous device command (8b)
-#   deep    — state query, context phrase, multi-entity (14b)
-#   instant — greeting, chitchat, general trivia with no home action (1.7b)
+#   moderate — single device command, lock, switch, climate (qwen2.5:7b, tools OK, ~2s)
+#   deep     — state query, multi-entity, scene/routine, context phrase (qwen3:14b, ~5s)
+#   instant  — greeting, chitchat, general trivia with no home action (qwen3:1.7b)
 [profiles.ha-auto]
 mode              = "classify"
 classifier        = "local:instant"
-max_auto_tier     = "local:max"
+max_auto_tier     = "local:deep"
 classifier_prompt = """\
-Route this Home Assistant request. Reply with one word: instant, fast, or deep.
+Route this Home Assistant request. Reply with one word: instant, moderate, or deep.
 
-  Turn on the kitchen lights                               -> fast
-  Lock the front door                                      -> fast
-  Set the thermostat to 72                                 -> fast
-  Dim the office light to 40%                              -> fast
-  Play music in the bedroom                                -> fast
-  Turn off the TV                                          -> fast
+  Turn on the kitchen lights                               -> moderate
+  Lock the front door                                      -> moderate
+  Set the thermostat to 72                                 -> moderate
+  Dim the office light to 40%                              -> moderate
+  Play music in the bedroom                                -> moderate
+  Turn off the TV                                          -> moderate
   What is the living room temperature?                     -> deep
   What is the temperature outside?                         -> deep
   Are any lights on downstairs?                            -> deep
@@ -125,7 +123,7 @@ Route this Home Assistant request. Reply with one word: instant, fast, or deep.
   What's the capital of France?                            -> instant
   What's 2+2?                                              -> instant
 
-Reply with one word only: instant, fast, or deep.\
+Reply with one word only: instant, moderate, or deep.\
 """
 system_prompt = """\
 You are a voice-activated assistant integrated with Home Assistant.
@@ -161,24 +159,23 @@ GENERAL:
 - One sentence for simple facts.
 """
 
-# "ha-auto:fast:latest" — same classifier, capped at 8b (local:deep).
+# "ha-auto:fast:latest" — same classifier, capped at local:moderate (7b).
 #
-# Trade-off: ~2s warm responses (vs ~5s on accurate) at some accuracy cost.
-# Device commands that the 14b gets right the 8b may occasionally fumble.
+# Trade-off: ~2s warm responses (vs ~5s on deep) at some accuracy cost.
 # Good for users who prefer speed and are OK with occasional re-phrasing.
 [profiles."ha-auto:fast"]
 mode              = "classify"
 classifier        = "local:instant"
-max_auto_tier     = "local:deep"
+max_auto_tier     = "local:moderate"
 classifier_prompt = """\
 You route requests to a Home Assistant voice assistant.
 
 Apply rules in order:
-1. Involves any home device, appliance, lock, light, thermostat, climate, sensor, or home system → deep
-2. Checks or queries any home state, condition, or status → deep
+1. Involves any home device, appliance, lock, light, thermostat, climate, sensor, or home system → moderate
+2. Checks or queries any home state, condition, or status → moderate
 3. A greeting, chitchat, or purely factual question with zero home action → instant
 
-Reply with exactly one word: instant or deep.\
+Reply with exactly one word: instant or moderate.\
 """
 system_prompt = """\
 You are a voice-activated assistant integrated with Home Assistant.
@@ -218,14 +215,14 @@ GENERAL:
 [profiles.general]
 mode              = "classify"
 classifier        = "local:instant"
-max_auto_tier     = "local:max"
+max_auto_tier     = "local:deep"
 classifier_prompt = """\
 Classify this request. Reply with exactly one label.
 
 instant          — greeting, one-word fact, no reasoning needed          (1.7b)
 instant-think    — simple question with mild uncertainty                 (1.7b + CoT)
-moderate         — explanation, code, analysis (clear task)              (8b)
-moderate-think   — moderate task that benefits from step-by-step         (8b + CoT)
+moderate         — explanation, code, analysis, device commands           (7b)
+  moderate-think   — moderate task that benefits from step-by-step         (7b + CoT)
 deep             — complex code, architecture, detailed analysis         (14b)
 deep-think       — hardest problems, multi-step reasoning, design        (14b + CoT)
 
@@ -243,7 +240,7 @@ You are a concise and helpful AI assistant.
 [profiles.default]
 mode              = "classify"
 classifier        = "local:instant"
-max_auto_tier     = "local:max"
+max_auto_tier     = "local:deep"
 classifier_prompt = """\
 Classify this request. Reply with exactly one label.
 
