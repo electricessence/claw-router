@@ -151,34 +151,15 @@ impl RouterState {
 // Classification helpers
 // ---------------------------------------------------------------------------
 
-/// The three complexity labels the classifier tier is expected to return.
-#[derive(Debug, Clone, Copy)]
-enum ClassLabel {
-    Simple,
-    Moderate,
-    Complex,
-}
-
-impl std::fmt::Display for ClassLabel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            ClassLabel::Simple => "simple",
-            ClassLabel::Moderate => "moderate",
-            ClassLabel::Complex => "complex",
-        })
-    }
-}
-
 /// Parse a classification label from the classifier's response.
 ///
-/// Looks at the first whitespace-delimited token in the response content and
-/// normalises it. The `-think` suffix (e.g. `fast-think`, `deep-think`) signals
-/// that chain-of-thought reasoning should be enabled for this specific request,
-/// overriding the tier's default `think` setting.
+/// Returns the base label token (lowercased, punctuation-stripped) and an
+/// optional think override.  The label is kept as a plain `String` so that
+/// tier resolution matches against configured tier names without any Rust
+/// changes when tiers are added, removed, or renamed in config.
 ///
-/// Numeric labels (`1`/`2`/`3`) and common synonyms are also accepted.
-/// Returns `(Moderate, None)` if the token is unrecognised (safe middle ground).
-fn parse_classification_label(response: &Value) -> (ClassLabel, Option<bool>) {
+/// The `-think` suffix (e.g. `deep-think`) sets `think_override = Some(true)`.
+fn parse_classification_label(response: &Value) -> (String, Option<bool>) {
     let content = response
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
@@ -190,27 +171,50 @@ fn parse_classification_label(response: &Value) -> (ClassLabel, Option<bool>) {
         .split_whitespace()
         .next()
         .unwrap_or("")
-        // Strip leading/trailing punctuation so "simple." or "[complex]" still match.
+        // Strip leading/trailing punctuation so "simple." or "[deep]" still match.
         .trim_matches(|c: char| !c.is_alphanumeric() && c != '-');
 
-    // Detect the -think suffix: fast-think, deep-think, instant-think, etc.
-    let (base, think_override) = if let Some(stripped) = first.strip_suffix("-think") {
-        (stripped, Some(true))
+    // Detect the -think suffix: deep-think, max-think, instant-think, etc.
+    if let Some(stripped) = first.strip_suffix("-think") {
+        (stripped.to_owned(), Some(true))
     } else {
-        (first, None)
-    };
+        (first.to_owned(), None)
+    }
+}
 
-    let label = match base {
-        "simple" | "1" | "easy" | "basic" | "trivial" | "low" | "instant" | "haiku" => ClassLabel::Simple,
-        "moderate" | "2" | "medium" | "normal" | "mid" | "fast" | "think" | "sonnet" => ClassLabel::Moderate,
-        "complex" | "3" | "hard" | "difficult" | "expert" | "high" | "deep" | "opus" => ClassLabel::Complex,
-        other => {
-            debug!(label = other, "unrecognised classification label — defaulting to moderate");
-            ClassLabel::Moderate
+/// Resolve a classifier label string to a tier from the candidate slice.
+///
+/// Matching order:
+/// 1. Exact tier name match           (e.g. "local:instant")
+/// 2. Tier name suffix after `:`      (e.g. "instant" → "local:instant")
+/// 3. Numeric / synonym positional fallbacks
+/// 4. Middle candidate as safe default
+///
+/// Because resolution is name-driven, tiers can be added or renamed in
+/// config with no Rust changes required.
+fn resolve_tier_by_label<'a>(label: &str, candidates: &'a [TierConfig]) -> &'a TierConfig {
+    let n = candidates.len();
+    // 1. Exact full name.
+    if let Some(t) = candidates.iter().find(|t| t.name == label) {
+        return t;
+    }
+    // 2. Suffix after the last ':'  ("instant" matches "local:instant").
+    if let Some(t) = candidates.iter().find(|t| t.name.rsplit(':').next() == Some(label)) {
+        return t;
+    }
+    // 3. Positional synonyms for classifier models that use ordinal or generic words.
+    let idx = match label {
+        "1" | "easy" | "basic" | "trivial" | "low" | "haiku" | "simple" => 0,
+        "2" => 1_usize.min(n.saturating_sub(1)),
+        "3" | "medium" | "normal" | "mid" | "sonnet" => n / 2,
+        "4" => n.saturating_sub(2).max(n / 2),
+        "5" | "hard" | "difficult" | "expert" | "high" | "opus" => n.saturating_sub(1),
+        unknown => {
+            debug!(label = unknown, "unrecognised classification label — defaulting to middle tier");
+            n / 2
         }
     };
-
-    (label, think_override)
+    &candidates[idx]
 }
 
 // ---------------------------------------------------------------------------
@@ -641,21 +645,18 @@ async fn classify_and_dispatch(
     let client = BackendClient::new(&backend_cfg)?;
     let (label, think_override) = match client.classify(classifier_body).await {
         Ok(response) => {
-            let (label, think_override) = parse_classification_label(&response);
-            debug!(%label, think_override = ?think_override, "classified request");
-            (label, think_override)
+            let parsed = parse_classification_label(&response);
+            debug!(label = %parsed.0, think_override = ?parsed.1, "classified request");
+            parsed
         }
         Err(e) => {
             warn!(err = %e, "classification call failed — defaulting to first tier");
-            (ClassLabel::Simple, None)
+            (String::from("instant"), None)
         }
     };
 
-    // Map label → tier index.
-    let n = candidates.len();
-    // If the conversation contains a tool-result, the model must synthesise
-    // external data.  Bump Simple → Moderate to avoid routing to the tiny
-    // instant-tier model.
+    // If the conversation contains a tool-result the model must synthesise
+    // external data — don't send it to the cheapest tier.
     let has_tool_result = body
         .pointer("/messages")
         .and_then(Value::as_array)
@@ -663,27 +664,20 @@ async fn classify_and_dispatch(
             m.get("role").and_then(Value::as_str) == Some("tool")
         }))
         .unwrap_or(false);
-    let label = if has_tool_result && matches!(label, ClassLabel::Simple) {
-        debug!("tool-result in conversation — bumping Simple → Moderate");
-        ClassLabel::Moderate
-    } else {
-        label
-    };
-    let tier_idx = match label {
-        ClassLabel::Simple   => 0,
-        ClassLabel::Moderate => n / 2,
-        ClassLabel::Complex  => n.saturating_sub(1),
-    };
-    let target_tier = &candidates[tier_idx];
+
+    let mut target_tier = resolve_tier_by_label(&label, candidates);
+    if has_tool_result && std::ptr::eq(target_tier, &candidates[0]) && candidates.len() > 1 {
+        debug!("tool-result — bumping from cheapest tier to next");
+        target_tier = &candidates[1];
+    }
 
     debug!(
-        %label,
+        label = %label,
         tier = %target_tier.name,
         "classify routing resolved"
     );
 
-    // If the classifier returned a -think label, inject the think override before
-    // dispatching so that dispatch()'s tier-level setting doesn't shadow it.
+    // Inject think override before dispatching.
     if let Some(t) = think_override {
         if let Some(obj) = body.as_object_mut() {
             obj.insert("think".into(), Value::Bool(t));
@@ -778,17 +772,17 @@ pub async fn route_stream(
 
             let client = BackendClient::new(&backend_cfg)?;
             let (label, think_override) = match client.classify(classifier_body).await {
-                Ok(r) => parse_classification_label(&r),
+                Ok(r) => {
+                    let parsed = parse_classification_label(&r);
+                    debug!(label = %parsed.0, think_override = ?parsed.1, "stream classify resolved");
+                    parsed
+                }
                 Err(e) => {
                     warn!(err = %e, "stream classify call failed — defaulting to first tier");
-                    (ClassLabel::Simple, None)
+                    (String::from("instant"), None)
                 }
             };
 
-            // If the conversation already contains a tool-result message the model
-            // must synthesise external data, which requires more capability than the
-            // original user query implies.  Bump Simple → Moderate so the tiny
-            // instant-tier model isn't asked to process multi-turn tool use.
             let has_tool_result = request_body
                 .pointer("/messages")
                 .and_then(Value::as_array)
@@ -796,28 +790,22 @@ pub async fn route_stream(
                     m.get("role").and_then(Value::as_str) == Some("tool")
                 }))
                 .unwrap_or(false);
-            let label = if has_tool_result && matches!(label, ClassLabel::Simple) {
-                debug!("tool-result in conversation — bumping Simple → Moderate");
-                ClassLabel::Moderate
-            } else {
-                label
-            };
 
-            let idx = match label {
-                ClassLabel::Simple   => 0,
-                ClassLabel::Moderate => n / 2,
-                ClassLabel::Complex  => n.saturating_sub(1),
-            };
-            debug!(%label, think_override = ?think_override, tier = %candidates[idx].name, "stream classify resolved");
+            let mut target_tier = resolve_tier_by_label(&label, candidates);
+            if has_tool_result && std::ptr::eq(target_tier, &candidates[0]) && n > 1 {
+                debug!("tool-result — bumping from cheapest tier to next");
+                target_tier = &candidates[1];
+            }
 
-            // If the classifier returned a -think label, inject before streaming dispatch.
+            // Inject think override before streaming dispatch.
             if let Some(t) = think_override {
                 if let Some(obj) = request_body.as_object_mut() {
                     obj.insert("think".into(), Value::Bool(t));
                 }
             }
 
-            candidates[idx].name.clone()
+            debug!(label = %label, tier = %target_tier.name, "stream classify resolved");
+            target_tier.name.clone()
         } else {
             classifier_tier.name.clone()
         }
