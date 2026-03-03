@@ -75,8 +75,14 @@ think   = true
 # ---------------------------------------------------------------------------
 [aliases]
 # HA sends "ha-auto:latest"; entry-point alias for classify mode.
-"ha-auto:latest" = "local:instant"
-"ha-auto"        = "local:instant"
+"ha-auto:latest"      = "local:instant"
+"ha-auto"             = "local:instant"
+"ha-auto:fast:latest" = "local:instant"
+"ha-auto:fast"        = "local:instant"
+
+# General smart-router profile.
+"general:latest" = "local:instant"
+"general"        = "local:instant"
 
 # Hint aliases for Open WebUI / other clients.
 "hint:instant"   = "local:instant"
@@ -108,66 +114,83 @@ profile = "ha-auto"
 [profiles.ha-auto]
 mode              = "classify"
 classifier        = "local:instant"
+# classifier_think = true    # uncomment to enable CoT for the pre-flight call
 max_auto_tier     = "local:deep"
 classifier_prompt = """\
-Route this Home Assistant voice request. Reply with one word only.
+Classify this Home Assistant voice command. Reply with ONLY: class=<label>
 
-  instant  — greeting or chitchat with no possible home action
-  fast     — simple device command where the entity needs reasoning
-  moderate — single device command with a clearly named entity
-  deep     — state query, multi-room, multi-device, or scene trigger
+greeting — Hi, thanks, bye, chitchat, or anything that needs no device action
+vague    — command or instruction with no clearly named device or area
+command  — action targeting a named device, room, or area
+question — state query (is X on/off/open/locked? what is the temperature?)
+complex  — scene, routine, multi-device command, or arrival/departure trigger
 
-  Hi                                                       -> instant
-  How are you                                              -> instant
-  Good morning                                             -> instant
-  Tell me a joke                                           -> instant
-  Turn on the office light                                 -> moderate
-  Lock the front door                                      -> moderate
-  Turn off the TV                                          -> moderate
-  Set the thermostat to 72                                 -> moderate
-  Turn on the light in my office                           -> fast
-  Lock up                                                  -> fast
-  Turn off all the lights                                  -> deep
-  What is the living room temperature?                     -> deep
-  Are any lights on downstairs?                            -> deep
-  Is the garage door open?                                 -> deep
-  Goodnight                                                -> deep
-  I'm home                                                 -> deep
-  I'm leaving                                              -> deep
+Examples:
+  Hi                             ->  class=greeting
+  Good morning                   ->  class=greeting
+  How are you                    ->  class=greeting
+  Thank you                      ->  class=greeting
+  Tell me a joke                 ->  class=greeting
+  Turn on the light              ->  class=vague
+  Turn off the fan               ->  class=vague
+  Lock up                        ->  class=vague
+  Turn on the office light       ->  class=command
+  Turn off the kitchen light     ->  class=command
+  Lock the front door            ->  class=command
+  Set the thermostat to 72       ->  class=command
+  Dim the bedroom light to 50%   ->  class=command
+  Is the front door locked?      ->  class=question
+  Is the garage door open?       ->  class=question
+  Are all the doors locked?      ->  class=question
+  What lights are still on?      ->  class=question
+  Turn off all the lights        ->  class=complex
+  Goodnight                      ->  class=complex
+  I'm home                       ->  class=complex
+  I'm leaving                    ->  class=complex
 
-Reply with one word only: instant, fast, moderate, or deep.\
+Reply with ONLY the tag. No explanation.\
 """
+
+[[profiles.ha-auto.rules]]
+when     = { class = "greeting" }
+route_to = "local:instant"
+priority = 100
+
+[[profiles.ha-auto.rules]]
+when     = { class = "vague" }
+route_to = "local:fast"
+priority = 80
+
+[[profiles.ha-auto.rules]]
+when     = { class = "command" }
+route_to = "local:moderate"
+priority = 60
+
+[[profiles.ha-auto.rules]]
+when     = { class = "question" }
+route_to = "local:deep"
+priority = 40
+
+[[profiles.ha-auto.rules]]
+when     = { class = "complex" }
+route_to = "local:deep"
+priority = 20
+
 system_prompt = """\
-You are a voice-activated Home Assistant controller.
+You are a Home Assistant voice controller. Execute commands via tools; confirm briefly.
 
-TOOL USE:
-- Call a tool immediately and directly when the user requests a home action.
-- Choose the entity whose name most closely matches what the user said, using only names present in the provided entity list.
-- When multiple entities match (e.g. two office lights), call the tool once per matching entity.
-- Respond with a brief confirmation after tool results arrive: "Done." or "Office lights are off."
-- For requests about things outside the entity list (weather, external services), answer from general knowledge in one sentence.
-
-ENTITY NAMES:
-- Copy the entity name exactly as it appears in the provided list — spelling, capitalisation, and all.
-- When the user's wording is ambiguous, pick the closest match from the list and act on it.
-- When no entity is a reasonable match, ask the user to clarify with one short question.
-
-LOCKS:
-- "lock" / "lock up" / "lock the door" = HassTurnOn(domain=lock).
-- "unlock" = HassTurnOff(domain=lock).
-
-STATE QUERIES:
-- Call the relevant tool, then answer in one sentence using the value returned.
-
-AUTOMATIONS:
-- Toggle with the appropriate tool and confirm briefly.
-- Creating or editing automation logic requires the Home Assistant UI — say so in one sentence.
-
-GENERAL:
-- One sentence for facts and confirmations.
+- Match entity names exactly from the provided list. Pick the closest match for ambiguous requests.
+- Multiple matches (e.g. two office lights): call the tool once per entity.
+- "lock" / "lock up" = HassTurnOn(domain=lock). "unlock" = HassTurnOff(domain=lock).
+- Door names: "front door" may be a contact sensor (open/closed); "front door lock" is the lock entity. Use the lock entity for lock/unlock commands and lock status queries.
+- State queries: call the tool, answer in one sentence.
+- Automation toggle: use the tool, confirm. Creating automations needs the HA UI.
+- Off-topic questions: answer in one sentence from general knowledge.
+- No entity match: ask one short clarifying question.\
 """
 
-# "ha-auto:fast:latest" — same classifier, capped at local:moderate (qwen2.5:7b).
+# "ha-auto:fast:latest" — same classifier as ha-auto, capped at local:moderate.
+# max_auto_tier does the downscaling — classifier sees all 3 tiers, gateway clamps.
 #
 # Trade-off: ~2s warm responses at some accuracy cost vs ha-auto.
 [profiles."ha-auto:fast"]
@@ -175,50 +198,62 @@ mode              = "classify"
 classifier        = "local:instant"
 max_auto_tier     = "local:moderate"
 classifier_prompt = """\
-Route this Home Assistant voice request. Reply with one word only.
+Classify this Home Assistant voice command into exactly one tier.
 
-  instant  — greeting or chitchat with no possible home action
-  fast     — simple device command where the entity needs reasoning
-  moderate — single device command with a clearly named entity
+fast     — greeting, chitchat, joke, general knowledge, or simple command without a named entity
+moderate — single device command with a clearly named entity or area
+deep     — status query, multi-device command, scene, routine, or arrival/departure trigger
 
-  Hi                                                       -> instant
-  Good morning                                             -> instant
-  Turn on the office light                                 -> moderate
-  Lock the front door                                      -> moderate
-  Turn on the light in my office                           -> fast
+  Hi                                                       -> fast
+  Hello                                                    -> fast
+  Hey                                                      -> fast
+  How are you                                              -> fast
+  Good morning                                             -> fast
+  Tell me a joke                                           -> fast
+  What's the capital of France?                            -> fast
+  What model are you?                                      -> fast
+  What time is it?                                         -> fast
+  Thank you                                                -> fast
+  Turn on the light                                        -> fast
+  Turn off the light                                       -> fast
   Lock up                                                  -> fast
-  Is the garage door open?                                 -> moderate
+  Never mind                                               -> fast
+  Turn on the office light                                 -> moderate
+  Turn off the kitchen light                               -> moderate
+  Lock the front door                                      -> moderate
+  Unlock the back door                                     -> moderate
+  Turn off the TV                                          -> moderate
+  Set the thermostat to 72                                 -> moderate
+  Dim the bedroom light to 50%                             -> moderate
+  Play music in the living room                            -> moderate
+  Open the garage door                                     -> moderate
+  Close the blinds in the bedroom                          -> moderate
+  Set the living room light to blue                        -> moderate
+  Is the front door locked?                                -> deep
+  Is the garage door open?                                 -> deep
+  What is the living room temperature?                     -> deep
+  Are any lights on downstairs?                            -> deep
+  What lights are still on?                                -> deep
+  Are all the doors locked?                                -> deep
+  Turn off all the lights                                  -> deep
+  Turn on everything in the kitchen                        -> deep
+  Goodnight                                                -> deep
+  I'm home                                                 -> deep
+  I'm leaving                                              -> deep
 
-Reply with one word only: instant, fast, or moderate.\
+Reply with one word: fast, moderate, or deep.\
 """
 system_prompt = """\
-You are a voice-activated Home Assistant controller.
+You are a Home Assistant voice controller. Execute commands via tools; confirm briefly.
 
-TOOL USE:
-- Call a tool immediately and directly when the user requests a home action.
-- Choose the entity whose name most closely matches what the user said, using only names present in the provided entity list.
-- When multiple entities match (e.g. two office lights), call the tool once per matching entity.
-- Respond with a brief confirmation after tool results arrive: "Done." or "Office lights are off."
-- For requests about things outside the entity list (weather, external services), answer from general knowledge in one sentence.
-
-ENTITY NAMES:
-- Copy the entity name exactly as it appears in the provided list — spelling, capitalisation, and all.
-- When the user's wording is ambiguous, pick the closest match from the list and act on it.
-- When no entity is a reasonable match, ask the user to clarify with one short question.
-
-LOCKS:
-- "lock" / "lock up" / "lock the door" = HassTurnOn(domain=lock).
-- "unlock" = HassTurnOff(domain=lock).
-
-STATE QUERIES:
-- Call the relevant tool, then answer in one sentence using the value returned.
-
-AUTOMATIONS:
-- Toggle with the appropriate tool and confirm briefly.
-- Creating or editing automation logic requires the Home Assistant UI — say so in one sentence.
-
-GENERAL:
-- One sentence for facts and confirmations.
+- Match entity names exactly from the provided list. Pick the closest match for ambiguous requests.
+- Multiple matches (e.g. two office lights): call the tool once per entity.
+- "lock" / "lock up" = HassTurnOn(domain=lock). "unlock" = HassTurnOff(domain=lock).
+- Door names: "front door" may be a contact sensor (open/closed); "front door lock" is the lock entity. Use the lock entity for lock/unlock commands and lock status queries.
+- State queries: call the tool, answer in one sentence.
+- Automation toggle: use the tool, confirm. Creating automations needs the HA UI.
+- Off-topic questions: answer in one sentence from general knowledge.
+- No entity match: ask one short clarifying question.\
 """
 
 # "general:latest" — generic smart router for Open WebUI and other LAN clients.

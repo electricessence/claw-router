@@ -319,6 +319,7 @@ pub(super) async fn classify_and_dispatch(
     let candidates: &[TierConfig] = &config.tiers[..=max_idx];
 
     // Make the classification call (non-streaming, max_tokens=10, temp=0).
+    let classifier_think = profile.classifier_think.unwrap_or(false);
     let classifier_body = serde_json::json!({
         "model": classifier_tier.model,
         "messages": [
@@ -326,11 +327,11 @@ pub(super) async fn classify_and_dispatch(
             { "role": "user",   "content": &user_text   }
         ],
         "stream": false,
-        "think": false,
+        "think": classifier_think,
         // num_predict and temperature go in options for Ollama native /api/chat;
         // max_tokens / temperature are OpenAI-compat fields that the native
         // endpoint silently ignores.
-        "options": { "num_predict": 5, "temperature": 0 }
+        "options": { "num_predict": 10, "temperature": 0 }
     });
 
     let client = BackendClient::new(&backend_cfg)?;
