@@ -15,8 +15,7 @@ traffic_log_capacity = 500
 log_level            = "info"
 admin_token_env      = "LMG_ADMIN_TOKEN"
 # Unauthenticated LAN requests fall through to this profile instead of 401.
-# claw-agent: 100% local processing, classify mode tuned for agent workloads.
-public_profile       = "claw-agent"
+public_profile       = "ha-auto"
 
 # ---------------------------------------------------------------------------
 # Backend — local Ollama on the same container
@@ -28,11 +27,6 @@ base_url    = "http://127.0.0.1:11434"
 # (model load can take 30–90 s) and avoids the 30-second default cutoff.
 # Streaming requests use a separate no-timeout client and are unaffected.
 timeout_ms  = 300000
-# Extend Ollama's context window beyond the default 4096 tokens.
-# Agent requests include system prompts, tool definitions, and conversation
-# history that can easily exceed 4096 tokens — without this, Ollama silently
-# truncates the input, causing degraded or failed responses.
-default_options = { num_ctx = 16384 }
 
 # ---------------------------------------------------------------------------
 # Tiers — ordered by cost/latency (cheapest first)
@@ -97,11 +91,6 @@ think   = true
 "hint:deep"      = "local:deep"
 "hint:max"       = "local:max"
 
-# Agent alias — "auto" resolves to the classifier entry tier.
-# The claw-agent profile handles actual routing via classification.
-"auto"           = "local:instant"
-"auto:latest"    = "local:instant"
-
 # ---------------------------------------------------------------------------
 # Clients — API key → profile bindings (keys loaded from env vars)
 # ---------------------------------------------------------------------------
@@ -110,22 +99,20 @@ think   = true
 key_env = "LMG_HA_KEY"
 profile = "ha-auto"
 
-[[clients]]
-key_env = "LMG_AGENT_KEY"
-profile = "claw-agent"
-
 # ---------------------------------------------------------------------------
 # Profiles — these are the "models" Ollama clients see in /api/tags
 # ---------------------------------------------------------------------------
 
 # "ha-auto:latest" — what Home Assistant sees and uses.
 #
-# 6-label semantic classify: qwen3:1.7b pre-flight identifies intent before routing.
-#   greeting     — pure social (Hi/bye/thanks/Goodnight)          → qwen3:1.7b no-think
+# 8-label semantic classify: qwen3:1.7b pre-flight identifies intent before routing.
+#   greeting     — pure social (Hi/bye/thanks)                    → qwen3:1.7b no-think
 #   chitchat     — off-topic general knowledge or humor            → qwen3:1.7b + think
-#   command      — any action request (named or unnamed target)    → qwen2.5:7b
+#   vague        — action with no named device/area                → qwen3:1.7b + think
+#   command      — action targeting a named device/room/area       → qwen2.5:7b
 #   conversation — reply to a prior model question (disambiguation) → qwen2.5:7b
 #   inquiry      — state query (is X on/locked/open?)              → qwen3:14b
+#   automation   — named scene/routine/arrival trigger             → qwen3:14b
 #   other        — catch-all: unrecognised or ambiguous            → qwen3:14b
 [profiles.ha-auto]
 mode              = "classify"
@@ -133,44 +120,46 @@ classifier        = "local:instant"
 # classifier_think = true    # uncomment to enable CoT for the pre-flight call
 max_auto_tier     = "local:deep"
 classifier_prompt = """\
-Classify this Home Assistant voice command. Reply with ONLY: tier=<tier> class=<label>
+Classify this Home Assistant voice command. Reply with ONLY: class=<label>
 
-greeting     — Hi, thanks, bye, good morning/evening/night (social, no home action)
+greeting     — Hi, thanks, bye, how are you (pure social, no home action)
 chitchat     — joke, trivia, general knowledge question, off-topic
-command      — any action request, with or without a named device or area
+vague        — action command with no clearly named device or area
+command      — action targeting a named device, room, or area
 conversation — one-word or short reply to a prior assistant question
 inquiry      — state query about a specific device or area
+automation   — arrival/departure trigger or named scene/routine
 other        — unclear, complex, or doesn't fit any category above
 
 Examples:
-  Hi                               ->  tier=instant  class=greeting
-  Good morning                     ->  tier=instant  class=greeting
-  Thank you                        ->  tier=instant  class=greeting
-  Bye                              ->  tier=instant  class=greeting
-  Goodnight                        ->  tier=instant  class=greeting
-  Good evening                     ->  tier=instant  class=greeting
-  Tell me a joke                   ->  tier=fast     class=chitchat
-  What's the capital of France?    ->  tier=fast     class=chitchat
-  What's the capital of Brazil?    ->  tier=fast     class=chitchat
-  Turn on the light                ->  tier=moderate class=command
-  Turn off the fan                 ->  tier=moderate class=command
-  Lock up                          ->  tier=moderate class=command
-  Turn on the office light         ->  tier=moderate class=command
-  Turn off the kitchen light       ->  tier=moderate class=command
-  Lock the front door              ->  tier=moderate class=command
-  Set the thermostat to 72         ->  tier=moderate class=command
-  Dim the bedroom light to 50%     ->  tier=moderate class=command
-  Yes                              ->  tier=moderate class=conversation
-  No                               ->  tier=moderate class=conversation
-  The bedroom one                  ->  tier=moderate class=conversation
-  All of them                      ->  tier=moderate class=conversation
-  Is the front door locked?        ->  tier=deep     class=inquiry
-  Is the garage door open?         ->  tier=deep     class=inquiry
-  Are all the doors locked?        ->  tier=deep     class=inquiry
-  What lights are still on?        ->  tier=deep     class=inquiry
-  What is the garage door's state? ->  tier=deep     class=inquiry
+  Hi                               ->  class=greeting
+  Good morning                     ->  class=greeting
+  Thank you                        ->  class=greeting
+  Bye                              ->  class=greeting
+  Tell me a joke                   ->  class=chitchat
+  What's the capital of France?    ->  class=chitchat
+  Turn on the light                ->  class=vague
+  Turn off the fan                 ->  class=vague
+  Lock up                          ->  class=vague
+  Turn on the office light         ->  class=command
+  Turn off the kitchen light       ->  class=command
+  Lock the front door              ->  class=command
+  Set the thermostat to 72         ->  class=command
+  Dim the bedroom light to 50%     ->  class=command
+  Yes                              ->  class=conversation
+  No                               ->  class=conversation
+  The bedroom one                  ->  class=conversation
+  All of them                      ->  class=conversation
+  Is the front door locked?        ->  class=inquiry
+  Is the garage door open?         ->  class=inquiry
+  Are all the doors locked?        ->  class=inquiry
+  What lights are still on?        ->  class=inquiry
+  I'm home                         ->  class=automation
+  I'm leaving                      ->  class=automation
+  Goodnight                        ->  class=automation
+  Movie time                       ->  class=automation
 
-Reply with ONLY the two tags. No explanation.\
+Reply with ONLY the tag. No explanation.\
 """
 
 [[profiles.ha-auto.rules]]
@@ -182,6 +171,11 @@ priority = 100
 when     = { class = "chitchat" }
 route_to = "local:fast"
 priority = 90
+
+[[profiles.ha-auto.rules]]
+when     = { class = "vague" }
+route_to = "local:fast"
+priority = 80
 
 [[profiles.ha-auto.rules]]
 when     = { class = "command" }
@@ -199,18 +193,14 @@ route_to = "local:deep"
 priority = 50
 
 [[profiles.ha-auto.rules]]
+when     = { class = "automation" }
+route_to = "local:deep"
+priority = 40
+
+[[profiles.ha-auto.rules]]
 when     = { class = "other" }
 route_to = "local:deep"
 priority = 10
-
-# Per-class framing nudges — prepended to system_prompt before dispatch.
-# command/other intentionally omitted: system_prompt covers commands;
-# deep model handles "other" without extra framing.
-[profiles.ha-auto.class_prompts]
-greeting     = "Respond warmly. Keep it to one sentence."
-chitchat     = "Answer briefly from general knowledge."
-conversation = "The user is continuing a prior exchange."
-inquiry      = "Query the device state and answer in one sentence."
 
 system_prompt = """\
 You are a Home Assistant voice controller. Execute commands via tools; confirm briefly.
@@ -237,7 +227,8 @@ classifier_prompt = """\
 Classify this Home Assistant voice command into exactly one tier.
 
 fast     — greeting, chitchat, joke, general knowledge, or simple command without a named entity
-moderate — single device command OR status query OR multi-device OR scene/routine trigger
+moderate — single device command with a clearly named entity or area
+deep     — status query, multi-device command, scene, routine, or arrival/departure trigger
 
   Hi                                                       -> fast
   Hello                                                    -> fast
@@ -264,19 +255,19 @@ moderate — single device command OR status query OR multi-device OR scene/rout
   Open the garage door                                     -> moderate
   Close the blinds in the bedroom                          -> moderate
   Set the living room light to blue                        -> moderate
-  Is the front door locked?                                -> moderate
-  Is the garage door open?                                 -> moderate
-  What is the living room temperature?                     -> moderate
-  Are any lights on downstairs?                            -> moderate
-  What lights are still on?                                -> moderate
-  Are all the doors locked?                                -> moderate
-  Turn off all the lights                                  -> moderate
-  Turn on everything in the kitchen                        -> moderate
-  Goodnight                                                -> moderate
-  I'm home                                                 -> moderate
-  I'm leaving                                              -> moderate
+  Is the front door locked?                                -> deep
+  Is the garage door open?                                 -> deep
+  What is the living room temperature?                     -> deep
+  Are any lights on downstairs?                            -> deep
+  What lights are still on?                                -> deep
+  Are all the doors locked?                                -> deep
+  Turn off all the lights                                  -> deep
+  Turn on everything in the kitchen                        -> deep
+  Goodnight                                                -> deep
+  I'm home                                                 -> deep
+  I'm leaving                                              -> deep
 
-Reply with one word: fast or moderate.\
+Reply with one word: fast, moderate, or deep.\
 """
 system_prompt = """\
 You are a Home Assistant voice controller. Execute commands via tools; confirm briefly.
@@ -328,43 +319,6 @@ fast       — simple question with mild uncertainty                 (1.7b + CoT
 moderate   — explanation, code, analysis, device commands          (7b)
 deep       — complex code, architecture, detailed analysis         (14b)
 max        — hardest problems, multi-step reasoning, design        (14b + CoT)
-
-Reply with one word only: instant, fast, moderate, deep, or max.\
-"""
-
-# ---------------------------------------------------------------------------
-# "claw-agent" — profile for ZeroClaw AI agents (100% local processing)
-#
-# Agents generate tool calls, code, SSH commands, config edits, and multi-step
-# plans. The classifier routes by cognitive load:
-#   instant  — acks, status pings, simple tool calls (list files, echo)
-#   fast     — single-tool invocations, short answers with mild reasoning
-#   moderate — code generation, config edits, multi-tool sequences
-#   deep     — architecture decisions, complex debugging, long code blocks
-#   max      — hardest: multi-file refactors, design docs, failure analysis
-# ---------------------------------------------------------------------------
-[profiles.claw-agent]
-mode              = "classify"
-classifier        = "local:instant"
-max_auto_tier     = "local:max"
-classifier_prompt = """\
-Classify this AI agent request by cognitive load. Reply with exactly one label.
-
-instant    — acknowledgment, status check, trivial tool call              (1.7b)
-fast       — single tool invocation, short factual answer, simple lookup  (1.7b + CoT)
-moderate   — code generation, config edit, shell script, multi-tool call  (7b)
-deep       — complex debugging, architecture analysis, long code blocks   (14b)
-max        — multi-file refactor, system design, failure root-cause       (14b + CoT)
-
-Examples:
-  List files in /tmp                    -> instant
-  What is my IP address?                -> instant
-  Check if nginx is running             -> fast
-  Read and summarize this config file   -> fast
-  Write a bash script to backup logs    -> moderate
-  Edit the docker-compose to add a vol  -> moderate
-  Debug why the build fails on step 3   -> deep
-  Refactor the auth module into 3 files -> max
 
 Reply with one word only: instant, fast, moderate, deep, or max.\
 """
