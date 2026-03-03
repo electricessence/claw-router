@@ -113,41 +113,68 @@ profile = "ha-auto"
 #   max      — complex scene, multi-step, or ambiguous context      (qwen3:14b-q3_K_M + think)
 [profiles.ha-auto]
 mode              = "classify"
-classifier        = "local:fast"
+classifier        = "local:instant"
+# classifier_think = true    # uncomment to enable CoT for the pre-flight call
 max_auto_tier     = "local:deep"
 classifier_prompt = """\
-Classify this Home Assistant voice command into exactly one tier. Reply with a single word only.
+Classify this Home Assistant voice command. Reply with ONLY: class=<label>
 
-fast     — greeting, chitchat, thanks, ambiguous or vague command (no clearly named device or area)
-moderate — single device command with a clearly named entity or area
-deep     — status query, multi-device command, scene, routine, or arrival/departure trigger
+greeting — Hi, thanks, bye, chitchat, or anything that needs no device action
+vague    — command or instruction with no clearly named device or area
+command  — action targeting a named device, room, or area
+question — state query (is X on/off/open/locked? what is the temperature?)
+complex  — scene, routine, multi-device command, or arrival/departure trigger
 
-  Hi                             -> fast
-  Good morning                   -> fast
-  How are you                    -> fast
-  Tell me a joke                 -> fast
-  What time is it?               -> fast
-  Thank you                      -> fast
-  Bye                            -> fast
-  Turn on the light              -> fast
-  Turn off the fan               -> fast
-  Lock up                        -> fast
-  Turn on the office light       -> moderate
-  Turn off the kitchen light     -> moderate
-  Lock the front door            -> moderate
-  Unlock the back door           -> moderate
-  Set the thermostat to 72       -> moderate
-  Dim the bedroom light to 50%   -> moderate
-  Is the front door locked?      -> deep
-  Is the garage door open?       -> deep
-  Are all the doors locked?      -> deep
-  What lights are still on?      -> deep
-  Turn off all the lights        -> deep
-  Goodnight                      -> deep
-  I'm home                       -> deep
+Examples:
+  Hi                             ->  class=greeting
+  Good morning                   ->  class=greeting
+  How are you                    ->  class=greeting
+  Thank you                      ->  class=greeting
+  Tell me a joke                 ->  class=greeting
+  Turn on the light              ->  class=vague
+  Turn off the fan               ->  class=vague
+  Lock up                        ->  class=vague
+  Turn on the office light       ->  class=command
+  Turn off the kitchen light     ->  class=command
+  Lock the front door            ->  class=command
+  Set the thermostat to 72       ->  class=command
+  Dim the bedroom light to 50%   ->  class=command
+  Is the front door locked?      ->  class=question
+  Is the garage door open?       ->  class=question
+  Are all the doors locked?      ->  class=question
+  What lights are still on?      ->  class=question
+  Turn off all the lights        ->  class=complex
+  Goodnight                      ->  class=complex
+  I'm home                       ->  class=complex
+  I'm leaving                    ->  class=complex
 
-Reply with the single tier word only. No punctuation, no explanation.\
+Reply with ONLY the tag. No explanation.\
 """
+
+[[profiles.ha-auto.rules]]
+when     = { class = "greeting" }
+route_to = "local:instant"
+priority = 100
+
+[[profiles.ha-auto.rules]]
+when     = { class = "vague" }
+route_to = "local:fast"
+priority = 80
+
+[[profiles.ha-auto.rules]]
+when     = { class = "command" }
+route_to = "local:moderate"
+priority = 60
+
+[[profiles.ha-auto.rules]]
+when     = { class = "question" }
+route_to = "local:deep"
+priority = 40
+
+[[profiles.ha-auto.rules]]
+when     = { class = "complex" }
+route_to = "local:deep"
+priority = 20
 
 system_prompt = """\
 You are a Home Assistant voice controller. Execute commands via tools; confirm briefly.

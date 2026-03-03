@@ -90,6 +90,15 @@ pub struct ProfileConfig {
     #[serde(default)]
     pub classifier_prompt: Option<String>,
 
+    /// Override the `think` flag sent to the classifier model.
+    ///
+    /// When `true`, chain-of-thought reasoning is enabled for the pre-flight
+    /// classification call (more accurate but ~2–4 s slower). When `false`
+    /// (default), thinking is disabled for the fastest possible pre-flight.
+    /// When absent, defaults to `false`.
+    #[serde(default)]
+    pub classifier_think: Option<bool>,
+
     /// Optional system prompt prepended to every request forwarded through this profile.
     ///
     /// When set, this text is injected as a `role = "system"` message at the front of
