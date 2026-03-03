@@ -2,19 +2,20 @@
 [CmdletBinding()]
 param(
     [string]$Base       = 'http://10.10.80.20:8080',
-    [string]$ClientKey  = $env:LMG_CLIENT_KEY
+    [string]$ClientKey  = $env:LMG_CLIENT_KEY   # optional — omit if gateway has no client auth
 )
 $ErrorActionPreference = 'Stop'
-if (-not $ClientKey) { throw 'Set LMG_CLIENT_KEY or pass -ClientKey' }
 
 function ICT([string]$Model, [string]$Q) {
     $body = @{ model=$Model; messages=@(@{role='user';content=$Q}); stream=$false } |
             ConvertTo-Json -Depth 5 -Compress
+    $headers = @{ 'Content-Type'='application/json' }
+    if ($ClientKey) { $headers['Authorization'] = "Bearer $ClientKey" }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         $r = Invoke-RestMethod -Method Post -Uri "$Base/v1/chat/completions" `
-                -Headers @{ Authorization="Bearer $ClientKey"; 'Content-Type'='application/json' } `
-                -Body $body -TimeoutSec 60
+                -Headers $headers `
+                -Body $body -TimeoutSec 90
         $sw.Stop()
         [PSCustomObject]@{ Ok=$true; Ms=$sw.ElapsedMilliseconds; Mdl=$r.model }
     } catch {
