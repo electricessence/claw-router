@@ -375,6 +375,11 @@ pub(super) async fn classify_and_dispatch(
                 obj.insert("think".into(), Value::Bool(t));
             }
         }
+        // Inject per-class system prompt if configured for this label.
+        let class_key = tags.get("class").map(String::as_str).unwrap_or(label.as_str());
+        if let Some(class_prompt) = profile.class_prompts.get(class_key) {
+            super::inject_system_prompt(body, class_prompt);
+        }
         return dispatch(state, body, rule_tier, stream).await;
     }
 
@@ -405,6 +410,12 @@ pub(super) async fn classify_and_dispatch(
         if let Some(obj) = body.as_object_mut() {
             obj.insert("think".into(), Value::Bool(t));
         }
+    }
+
+    // Inject per-class system prompt if configured for this label.
+    let class_key = tags.get("class").map(String::as_str).unwrap_or(label.as_str());
+    if let Some(class_prompt) = profile.class_prompts.get(class_key) {
+        super::inject_system_prompt(body, class_prompt);
     }
 
     dispatch(state, body, target_tier, stream).await

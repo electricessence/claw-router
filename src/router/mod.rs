@@ -35,7 +35,7 @@ use crate::{
     traffic::{TrafficEntry, TrafficLog},
 };
 
-use self::classify::{parse_classification_label, resolve_tier_by_label};
+use self::classify::{parse_classification, parse_classification_label, ParsedClassification, resolve_tier_by_label};
 use self::modes::{classify_and_dispatch, dispatch, escalate, resolve_target_tier};
 
 mod classify;
@@ -311,41 +311,72 @@ pub async fn route_stream(
             });
 
             let client = BackendClient::new(&backend_cfg)?;
-            let (label, think_override) = match client.classify(classifier_body).await {
-                Ok(r) => {
-                    let parsed = parse_classification_label(&r);
-                    debug!(label = %parsed.0, think_override = ?parsed.1, "stream classify resolved");
-                    parsed
-                }
-                Err(e) => {
-                    warn!(err = %e, "stream classify call failed — defaulting to first tier");
-                    (String::from("instant"), None)
-                }
-            };
+            let ParsedClassification { tier_label: label, think_override, tags } =
+                match client.classify(classifier_body).await {
+                    Ok(r) => {
+                        let parsed = parse_classification(&r);
+                        debug!(label = %parsed.tier_label, think_override = ?parsed.think_override, "stream classify resolved");
+                        parsed
+                    }
+                    Err(e) => {
+                        warn!(err = %e, "stream classify call failed — defaulting to first tier");
+                        ParsedClassification { tier_label: "instant".into(), ..Default::default() }
+                    }
+                };
 
-            let has_tool_result = request_body
-                .pointer("/messages")
-                .and_then(Value::as_array)
-                .map(|arr| arr.iter().any(|m| {
-                    m.get("role").and_then(Value::as_str) == Some("tool")
-                }))
-                .unwrap_or(false);
+            // Rule evaluation — mirrors the non-streaming classify_and_dispatch path.
+            let mut sorted_rules = profile.rules.clone();
+            sorted_rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+            if let Some(rule) = sorted_rules.iter().find(|r| {
+                r.when.iter().all(|(k, v)| {
+                    tags.get(k.as_str())
+                        .map(|tv| tv.eq_ignore_ascii_case(v))
+                        .unwrap_or(false)
+                })
+            }) {
+                debug!(route_to = %rule.route_to, "stream routing rule matched");
+                let class_key = tags.get("class").map(String::as_str).unwrap_or(label.as_str());
+                if let Some(class_prompt) = profile.class_prompts.get(class_key) {
+                    inject_system_prompt(&mut request_body, class_prompt);
+                }
+                if let Some(t) = think_override {
+                    if let Some(obj) = request_body.as_object_mut() {
+                        obj.insert("think".into(), Value::Bool(t));
+                    }
+                }
+                debug!(label = %label, route_to = %rule.route_to, "stream rule resolved");
+                rule.route_to.clone()
+            } else {
+                let has_tool_result = request_body
+                    .pointer("/messages")
+                    .and_then(Value::as_array)
+                    .map(|arr| arr.iter().any(|m| {
+                        m.get("role").and_then(Value::as_str) == Some("tool")
+                    }))
+                    .unwrap_or(false);
 
-            let mut target_tier = resolve_tier_by_label(&label, candidates);
-            if has_tool_result && std::ptr::eq(target_tier, &candidates[0]) && n > 1 {
-                debug!("tool-result — bumping from cheapest tier to next");
-                target_tier = &candidates[1];
+                let mut target_tier = resolve_tier_by_label(&label, candidates);
+                if has_tool_result && std::ptr::eq(target_tier, &candidates[0]) && n > 1 {
+                    debug!("tool-result — bumping from cheapest tier to next");
+                    target_tier = &candidates[1];
+                }
+
+                // Inject per-class system prompt if configured.
+                let class_key = tags.get("class").map(String::as_str).unwrap_or(label.as_str());
+                if let Some(class_prompt) = profile.class_prompts.get(class_key) {
+                    inject_system_prompt(&mut request_body, class_prompt);
+                }
+
+                // Inject think override before streaming dispatch.
+                if let Some(t) = think_override {
+                    if let Some(obj) = request_body.as_object_mut() {
+                        obj.insert("think".into(), Value::Bool(t));
+                    }
+                }
+
+                debug!(label = %label, tier = %target_tier.name, "stream classify resolved");
+                target_tier.name.clone()
             }
-
-            // Inject think override before streaming dispatch.
-            if let Some(t) = think_override {
-                if let Some(obj) = request_body.as_object_mut() {
-                    obj.insert("think".into(), Value::Bool(t));
-                }
-            }
-
-            debug!(label = %label, tier = %target_tier.name, "stream classify resolved");
-            target_tier.name.clone()
         } else {
             classifier_tier.name.clone()
         }
@@ -432,7 +463,7 @@ pub async fn route_stream(
 /// placed before its content (separated by `\n\n`), so client-provided context
 /// is preserved while the profile's instructions take precedence.
 /// If there is no existing system message, one is inserted at index 0.
-fn inject_system_prompt(body: &mut Value, prompt: &str) {
+pub(super) fn inject_system_prompt(body: &mut Value, prompt: &str) {
     let Some(messages) = body.pointer_mut("/messages").and_then(Value::as_array_mut) else {
         return;
     };
@@ -597,6 +628,7 @@ mod tests {
                         classifier_prompt: None,
                         system_prompt: None,
                         rules: vec![],
+                        ..Default::default()
                     },
                 );
                 m
