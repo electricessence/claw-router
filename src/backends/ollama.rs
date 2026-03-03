@@ -130,10 +130,6 @@ impl OllamaAdapter {
         if let Some(obj) = body.as_object_mut() {
             obj.entry("keep_alive").or_insert(serde_json::json!(-1));
             obj.insert("stream".into(), serde_json::json!(false));
-            // Thinking mode causes Qwen3 to emit Python-style plain-text function
-            // calls instead of structured tool_calls JSON.  Tool dispatch is a
-            // structured lookup, not a reasoning task — force it off unconditionally.
-            obj.insert("think".into(), serde_json::json!(false));
         }
 
         let model = body
@@ -175,7 +171,11 @@ impl OllamaAdapter {
             .unwrap_or("")
             .to_owned();
 
-        let (delta_first, finish_reason) = if let Some(tc) = tool_calls {
+        // When thinking models emit tool calls as plain text (e.g. `HassTurnOn(area="x", domain="y")`)
+        // instead of a structured tool_calls array, parse and convert them.
+        let resolved_tool_calls = tool_calls.or_else(|| Self::parse_plain_text_tool_calls(&content));
+
+        let (delta_first, finish_reason) = if let Some(tc) = resolved_tool_calls {
             // Convert Ollama native tool_calls → OpenAI format.
             let openai_calls: Vec<Value> = tc
                 .iter()
@@ -231,6 +231,60 @@ impl OllamaAdapter {
             parts.into_iter().map(Ok::<_, anyhow::Error>),
         )))
     }
+
+/// Parse Python-style plain-text tool calls emitted by thinking models when
+/// the structured `tool_calls` array is absent.
+///
+/// Matches one or more occurrences of `FunctionName(key="val", ...)` in the
+/// content string and converts them to the Ollama native tool_calls format so
+/// the existing conversion path can handle them uniformly.
+///
+/// Example input: `HassTurnOn(area="Office", domain="light")`
+fn parse_plain_text_tool_calls(content: &str) -> Option<Vec<Value>> {
+    let mut calls = Vec::new();
+    let mut remaining = content;
+
+    while let Some(paren) = remaining.find('(') {
+        // Walk backwards from the '(' to extract the function name.
+        let before = &remaining[..paren];
+        let name_start = before
+            .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let name = before[name_start..].trim();
+
+        if name.is_empty() || !name.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false) {
+            remaining = &remaining[paren + 1..];
+            continue;
+        }
+
+        // Find the matching closing paren.
+        let after_paren = &remaining[paren + 1..];
+        let Some(close) = after_paren.find(')') else { break };
+        let args_str = &after_paren[..close];
+
+        // Parse key="value" pairs.
+        let mut args = serde_json::Map::new();
+        for pair in args_str.split(',') {
+            let pair = pair.trim();
+            if let Some(eq) = pair.find('=') {
+                let key = pair[..eq].trim().to_owned();
+                let val = pair[eq + 1..].trim().trim_matches('"').to_owned();
+                if !key.is_empty() {
+                    args.insert(key, Value::String(val));
+                }
+            }
+        }
+
+        calls.push(serde_json::json!({
+            "function": { "name": name, "arguments": args }
+        }));
+
+        remaining = &after_paren[close + 1..];
+    }
+
+    if calls.is_empty() { None } else { Some(calls) }
+}
 
     /// Send a classification request via Ollama's native `/api/chat` endpoint.
     ///
