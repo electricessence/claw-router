@@ -34,6 +34,8 @@ use serde::{Deserialize, Serialize};
 mod gateway;
 mod profile;
 
+// Re-exported for downstream code that matches on BackendConfig::api_key_secret.
+#[allow(unused_imports)]
 pub use gateway::{BackendConfig, GatewayConfig, SecretSource};
 pub use profile::{DEFAULT_CLASSIFIER_PROMPT, ProfileConfig, RoutingMode, TierConfig};
 
@@ -127,11 +129,106 @@ pub struct Config {
     pub clients: Vec<ClientConfig>,
 }
 
+/// Deep-merge `overlay` into `base` in-place.
+///
+/// - **Tables**: keys in `overlay` recursively override/extend `base`.
+/// - **Arrays of tables that have a `name` field**: `overlay` entries replace
+///   same-named `base` entries in-place (order preserved); new names append.
+/// - **All other arrays and scalars**: `overlay` replaces `base` wholesale.
+fn deep_merge(base: &mut toml::Value, overlay: toml::Value) {
+    use toml::Value;
+    match (base, overlay) {
+        (Value::Table(base_t), Value::Table(overlay_t)) => {
+            for (key, ov_val) in overlay_t {
+                match base_t.get_mut(&key) {
+                    Some(base_val) => deep_merge(base_val, ov_val),
+                    None => {
+                        base_t.insert(key, ov_val);
+                    }
+                }
+            }
+        }
+        (Value::Array(base_arr), Value::Array(overlay_arr)) => {
+            for ov_item in overlay_arr {
+                // Named-table deduplication: if the overlay item is a table
+                // with a `name` key, replace the existing entry with the
+                // same name rather than appending a duplicate.
+                let maybe_name = if let Value::Table(ref t) = ov_item {
+                    t.get("name").and_then(|v| v.as_str()).map(str::to_owned)
+                } else {
+                    None
+                };
+                if let Some(name) = maybe_name {
+                    if let Some(existing) = base_arr.iter_mut().find(|v| {
+                        v.as_table()
+                            .and_then(|t| t.get("name"))
+                            .and_then(|n| n.as_str())
+                            == Some(&name)
+                    }) {
+                        *existing = ov_item;
+                        continue;
+                    }
+                }
+                base_arr.push(ov_item);
+            }
+        }
+        // Scalar / mixed: overlay wins.
+        (base, overlay) => *base = overlay,
+    }
+}
+
 impl Config {
+    /// Load configuration from `path`, then layer any `*.toml` files found in
+    /// a `conf.d/` directory sitting next to `path` (alphabetically ordered).
+    ///
+    /// ## Merge rules
+    ///
+    /// | Section | Behaviour |
+    /// |---|---|
+    /// | `[gateway]`, `[backends.*]`, `[aliases]`, `[profiles.*]` | Key-level merge — overlay wins per key |
+    /// | `[[tiers]]`, `[[clients]]` | Deduplicated by `name` field — overlay replaces same-named entry; new names append |
+    ///
+    /// A minimal `conf.d/local.toml` only needs to contain the sections it overrides:
+    ///
+    /// ```toml
+    /// # conf.d/local.toml — machine-specific overrides, untracked in git
+    /// [backends.ollama]
+    /// base_url = "http://192.168.1.50:11434"
+    ///
+    /// [[tiers]]
+    /// name    = "local:fast"
+    /// backend = "ollama"
+    /// model   = "qwen3:1.7b"
+    /// ```
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let content =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let config: Self = toml::from_str(&content).context("parsing config TOML")?;
+        let mut base: toml::Value = toml::from_str(&content)
+            .with_context(|| format!("parsing {}", path.display()))?;
+
+        // Layer conf.d/*.toml files alphabetically.
+        let conf_d = path.parent().unwrap_or(Path::new(".")).join("conf.d");
+        if conf_d.is_dir() {
+            let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(&conf_d)
+                .with_context(|| format!("reading conf.d directory {}", conf_d.display()))?
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().map(|x| x == "toml").unwrap_or(false))
+                .collect();
+            entries.sort();
+
+            for entry in entries {
+                let overlay_content = std::fs::read_to_string(&entry)
+                    .with_context(|| format!("reading {}", entry.display()))?;
+                let overlay: toml::Value = toml::from_str(&overlay_content)
+                    .with_context(|| format!("parsing {}", entry.display()))?;
+                deep_merge(&mut base, overlay);
+            }
+        }
+
+        // Serialize back to string and use toml::from_str exclusively (see gotchas.md).
+        let merged = toml::to_string(&base).context("re-serializing merged config")?;
+        let config: Self = toml::from_str(&merged).context("deserializing merged config")?;
         config.validate()?;
         Ok(config)
     }
@@ -432,5 +529,183 @@ mod tests {
         for (variant, expected) in cases {
             assert_eq!(variant.to_string(), expected);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // deep_merge helpers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn deep_merge_table_overlay_wins_per_key() {
+        let mut base: toml::Value = toml::from_str(
+            r#"
+[gateway]
+client_port = 8080
+admin_port  = 8081
+"#,
+        )
+        .unwrap();
+        let overlay: toml::Value = toml::from_str(
+            r#"
+[gateway]
+client_port = 9090
+"#,
+        )
+        .unwrap();
+        deep_merge(&mut base, overlay);
+        assert_eq!(
+            base["gateway"]["client_port"].as_integer(),
+            Some(9090),
+            "overlay key should win"
+        );
+        assert_eq!(
+            base["gateway"]["admin_port"].as_integer(),
+            Some(8081),
+            "base-only key should be preserved"
+        );
+    }
+
+    #[test]
+    fn deep_merge_array_replaces_same_named_entry() {
+        let mut base: toml::Value = toml::from_str(
+            r#"
+[[tiers]]
+name    = "local:fast"
+model   = "qwen2.5:1.5b"
+backend = "ollama"
+
+[[tiers]]
+name    = "local:deep"
+model   = "qwen2.5:7b"
+backend = "ollama"
+"#,
+        )
+        .unwrap();
+        let overlay: toml::Value = toml::from_str(
+            r#"
+[[tiers]]
+name    = "local:fast"
+model   = "qwen3:1.7b"
+backend = "ollama"
+"#,
+        )
+        .unwrap();
+        deep_merge(&mut base, overlay);
+        let tiers = base["tiers"].as_array().unwrap();
+        assert_eq!(tiers.len(), 2, "should not append a duplicate name");
+        let fast = &tiers[0];
+        assert_eq!(
+            fast["model"].as_str(),
+            Some("qwen3:1.7b"),
+            "overlay model should win"
+        );
+        // Second entry must be untouched.
+        assert_eq!(tiers[1]["name"].as_str(), Some("local:deep"));
+    }
+
+    #[test]
+    fn deep_merge_array_appends_new_named_entry() {
+        let mut base: toml::Value = toml::from_str(
+            r#"
+[[tiers]]
+name    = "local:fast"
+model   = "qwen2.5:1.5b"
+backend = "ollama"
+"#,
+        )
+        .unwrap();
+        let overlay: toml::Value = toml::from_str(
+            r#"
+[[tiers]]
+name    = "local:deep"
+model   = "qwen2.5:7b"
+backend = "ollama"
+"#,
+        )
+        .unwrap();
+        deep_merge(&mut base, overlay);
+        let tiers = base["tiers"].as_array().unwrap();
+        assert_eq!(tiers.len(), 2, "new name should be appended");
+        assert_eq!(tiers[1]["name"].as_str(), Some("local:deep"));
+    }
+
+    #[test]
+    fn conf_d_overrides_backend_url() {
+        let uid = uuid::Uuid::new_v4().to_string().replace('-', "");
+        let dir = std::env::temp_dir().join(format!("lmg-test-{uid}"));
+        let conf_d = dir.join("conf.d");
+        std::fs::create_dir_all(&conf_d).unwrap();
+
+        let base_toml = r#"
+[gateway]
+client_port = 8080
+admin_port  = 8081
+traffic_log_capacity = 500
+
+[backends.ollama]
+base_url = "http://localhost:11434"
+
+[[tiers]]
+name    = "local:fast"
+backend = "ollama"
+model   = "qwen2.5:1.5b"
+
+[aliases]
+"hint:fast" = "local:fast"
+
+[profiles.default]
+mode          = "dispatch"
+classifier    = "local:fast"
+max_auto_tier = "local:fast"
+"#;
+        let override_toml = r#"
+[backends.ollama]
+base_url = "http://192.168.1.50:11434"
+"#;
+        let cfg_path = dir.join("config.toml");
+        std::fs::write(&cfg_path, base_toml).unwrap();
+        std::fs::write(conf_d.join("10-local.toml"), override_toml).unwrap();
+
+        let config = Config::load(&cfg_path).expect("should load with conf.d override");
+        assert_eq!(
+            config.backends["ollama"].base_url,
+            "http://192.168.1.50:11434"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn conf_d_is_silently_skipped_when_absent() {
+        let uid = uuid::Uuid::new_v4().to_string().replace('-', "");
+        let dir = std::env::temp_dir().join(format!("lmg-test-{uid}"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let base_toml = r#"
+[gateway]
+client_port = 8080
+admin_port  = 8081
+traffic_log_capacity = 500
+
+[backends.ollama]
+base_url = "http://localhost:11434"
+
+[[tiers]]
+name    = "local:fast"
+backend = "ollama"
+model   = "qwen2.5:1.5b"
+
+[profiles.default]
+mode          = "dispatch"
+classifier    = "local:fast"
+max_auto_tier = "local:fast"
+"#;
+        let cfg_path = dir.join("config.toml");
+        std::fs::write(&cfg_path, base_toml).unwrap();
+        // No conf.d/ dir created — should not error.
+        let config = Config::load(&cfg_path).expect("should load without conf.d");
+        assert_eq!(config.gateway.client_port, 8080);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

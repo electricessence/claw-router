@@ -44,6 +44,79 @@ A lightweight, single-binary LLM routing gateway in Rust. No Python. No database
 
 > Targeted next
 
+### Semantic tagging — multi-label classification and rule-based routing
+
+The current classifier emits a single routing label (`fast`, `deep`, etc.). A structured multi-tag output from the same classifier call unlocks a lightweight rules engine that can route on semantic intent rather than model difficulty alone.
+
+**How it works (single LLM call):**
+
+The classifier prompt is extended to produce `key=value` pairs alongside — or instead of — the bare tier label:
+
+```
+tier=fast intent=greeting
+tier=fast intent=command domain=home
+tier=deep intent=question domain=security complexity=hard
+```
+
+**Profile config adds a `rules` table (first-match wins, priority desc):**
+
+```toml
+[[profiles.default.rules]]
+when     = { intent = "greeting" }
+route_to = "local:fast"
+priority = 30
+
+[[profiles.default.rules]]
+when     = { intent = "command", domain = "home" }
+route_to = "local:fast"
+priority = 20
+
+[[profiles.default.rules]]
+when     = { domain = "security" }
+route_to = "cloud:deep"
+priority = 10
+
+# No rule matched → fall through to normal tier-label routing
+```
+
+**Design principles:**
+
+- Tag keys and values are **user-defined** — the gateway matches strings, not a fixed schema. You design the taxonomy; the gateway evaluates it.
+- `conf.d/` overlays let you add or override rules per deployment without touching the base config.
+- Rules are a pre-pass: if a rule matches, the request is dispatched immediately and the normal difficulty-tier routing is skipped.
+- The existing label output (`tier=fast`) is still honoured as fallback when no rules match.
+- Backward-compatible: when no `rules` are configured, behaviour is identical to today.
+
+**What changes in code (~200 lines new Rust):**
+
+- `config/profile.rs`: add `RuleConfig { when: HashMap<String, String>, route_to: String, priority: i32 }` + `rules: Vec<RuleConfig>` on `ProfileConfig`
+- `router/classify.rs`: extend `parse_classification_label` to extract `key=value` tags alongside the tier label
+- `router/modes.rs`: rule-evaluation loop before tier dispatch in `classify_and_dispatch`
+
+**Typical tag schemas:**
+
+| Schema | Tags |
+|--------|------|
+| Home Assistant | `intent=command\|question\|status_query`, `domain=home\|sensor\|security\|general` |
+| Generic assistant | `intent=greeting\|task\|fact\|code`, `complexity=trivial\|normal\|hard` |
+| Custom | Anything — you define it in the classifier prompt |
+
+**Classifier fallback (fits here naturally):**
+
+When the classifier call fails outright (network error, timeout) or returns unusable output, fall back to a more reliable classifier tier rather than aborting or silently routing to the wrong place:
+
+```toml
+[profiles.default]
+classifier          = "local:instant"  # try this first (fastest, cheapest)
+classifier_fallback = "local:fast"     # retry with this on failure / empty output
+```
+
+On failure, fire once against `classifier_fallback`, parse the tags, then proceed normally. Zero extra latency on the happy path.
+
+Note: the classifier is always a local model — its purpose is to avoid unnecessary cloud routing. Cloud tiers are never a classifier candidate.
+
+---
+
 ### Traffic log export
 
 The traffic ring buffer is in-memory only — it disappears on restart. Two opt-in export modes:

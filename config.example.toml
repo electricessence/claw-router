@@ -1,6 +1,31 @@
 # lm-gateway example configuration
 # Copy to config.toml and adjust values for your environment.
 # NEVER put secret values directly in this file — use api_key_env to name an env var.
+#
+# ─── conf.d/ overlay directory ───────────────────────────────────────────────
+# Place any number of *.toml files in a conf.d/ directory next to config.toml.
+# They are loaded alphabetically and merged on top of config.toml at startup.
+# Only the keys / entries you include are overridden — everything else is kept.
+#
+# Typical use-cases:
+#   conf.d/10-local.toml     — machine-specific backend URLs (not in git)
+#   conf.d/20-models.toml    — swap model names per deployment
+#   conf.d/30-clients.toml   — add API clients without editing base config
+#
+# Merge rules:
+#   [backends.*], [gateway], [profiles.*]   →  key-level: overlay wins per key
+#   [[tiers]], [[clients]]                  →  same `name` = replaced in-place;
+#                                              new `name` = appended
+#
+# Example conf.d/10-local.toml:
+#   [backends.ollama]
+#   base_url = "http://192.168.1.50:11434"
+#
+#   [[tiers]]
+#   name    = "local:fast"
+#   backend = "ollama"
+#   model   = "qwen3:1.7b"
+# ─────────────────────────────────────────────────────────────────────────────
 
 [gateway]
 client_port = 8080       # agent-facing client API
