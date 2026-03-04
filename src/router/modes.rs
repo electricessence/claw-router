@@ -135,14 +135,25 @@ pub(super) fn classify_and_resolve<'a>(
                 }
             };
 
-        // Rule evaluation: sort by priority DESC, first non-cyclic match wins.
+        // Rule evaluation: rules are pre-sorted by priority DESC at config load time
+        // (Config::normalize), so we iterate directly without cloning or re-sorting.
         // A rule matches when every `when` key=value pair is present in `tags`.
         // Cyclic cascade rules are skipped and lower-priority rules are tried.
-        let class_label: String = tags.get("class").cloned().unwrap_or_else(|| label.clone());
-        let mut sorted_rules = profile.rules.clone();
-        sorted_rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        //
+        // class_label: prefer the explicit `class=` tag. If absent, check whether any
+        // other tag value matches a class_prompts key (defensive: handles prompts that
+        // emit `intent=greeting` or similar). Fall back to the tier label as last resort.
+        let class_label: String = tags
+            .get("class")
+            .cloned()
+            .or_else(|| {
+                tags.values()
+                    .find(|v| profile.class_prompts.contains_key(v.as_str()))
+                    .cloned()
+            })
+            .unwrap_or_else(|| label.clone());
 
-        for rule in &sorted_rules {
+        for rule in &profile.rules {
             if !rule.when.iter().all(|(k, v)| {
                 tags.get(k.as_str())
                     .map(|tv| tv.eq_ignore_ascii_case(v))

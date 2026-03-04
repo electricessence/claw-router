@@ -1,4 +1,31 @@
 #Requires -Version 7
+<#
+.SYNOPSIS
+    Run smoke-test classification prompts against an lm-gateway instance.
+.DESCRIPTION
+    Sends a fixed set of prompts to the 'ha-auto' classifier profile using the
+    OpenAI-compatible /v1/chat/completions endpoint of an lm-gateway instance.
+    For each prompt the script prints the measured latency, the resolved routing
+    tier (derived from the model returned), the expected tier, and the class label.
+
+    Authentication is optional: supply -ClientKey or set LMG_CLIENT_KEY.
+    The target gateway URL is controlled by -Base (or LM_GATEWAY_URL env var).
+.PARAMETER Base
+    Base URL of the lm-gateway instance. Defaults to $env:LM_GATEWAY_URL, then
+    falls back to http://localhost:8080.
+.PARAMETER ClientKey
+    Bearer token for gateway client auth. Defaults to $env:LMG_CLIENT_KEY.
+    Omit if the gateway has no client auth configured.
+.EXAMPLE
+    .\Invoke-ClassifySmoke.ps1
+
+    Runs smoke tests against the default base URL using the LMG_CLIENT_KEY
+    environment variable if set.
+.EXAMPLE
+    .\Invoke-ClassifySmoke.ps1 -Base 'http://localhost:8080' -ClientKey 'my-key'
+
+    Runs smoke tests against a specific lm-gateway instance with an explicit key.
+#>
 [CmdletBinding()]
 param(
     [string]$Base       = ($env:LM_GATEWAY_URL ?? 'http://localhost:8080'),

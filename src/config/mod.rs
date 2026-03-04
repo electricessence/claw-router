@@ -269,9 +269,18 @@ impl Config {
 
         // Serialize back to string and use toml::from_str exclusively (see gotchas.md).
         let merged = toml::to_string(&base).context("re-serializing merged config")?;
-        let config: Self = toml::from_str(&merged).context("deserializing merged config")?;
+        let mut config: Self = toml::from_str(&merged).context("deserializing merged config")?;
+        config.normalize();
         config.validate()?;
         Ok(config)
+    }
+
+    /// Sort rules within each profile by priority descending so that rule
+    /// evaluation in the hot path can iterate without re-sorting on every request.
+    fn normalize(&mut self) {
+        for profile in self.profiles.values_mut() {
+            profile.rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        }
     }
 
     fn validate(&self) -> anyhow::Result<()> {
