@@ -196,6 +196,36 @@ This is additive and backward-compatible. Profiles without `route_to` pointing a
 
 ---
 
+### Routing trace headers
+
+As a request travels through the gateway, attach response headers showing the full routing decision. Zero extra latency — the data is already computed internally.
+
+**Proposed headers (returned on every response):**
+
+| Header | Example |
+|---|---|
+| `X-LMG-Profile` | `auto → code-auto` (cascade path, or just `ha-auto` for single-hop) |
+| `X-LMG-Class` | `class=code` (top-level) / `complexity=complex` (second hop) |
+| `X-LMG-Tier` | `cloud:deep` |
+| `X-LMG-Model` | `claude-sonnet-4-5` |
+| `X-Request-ID` | `c4f3a2b1` (already implemented) |
+
+These headers:
+- Help clients/agents understand why they ended up on a given model
+- Feed the in-memory traffic log automatically — the admin UI can display the full routing decision per request
+- Provide opt-in observability without a separate tracing infrastructure
+- Are a natural complement to profile cascade routing (without them, cascade hops are opaque to the caller)
+
+Single-hop today: `X-LMG-Class: class=inquiry` / `X-LMG-Tier: local:moderate`  
+Cascade: `X-LMG-Profile: auto → code-auto` / `X-LMG-Class: class=code; complexity=complex` / `X-LMG-Tier: cloud:deep`
+
+**What changes in code (~40 lines new Rust):**
+
+- `router/modes.rs`: collect `(profile, class, tier, model)` tuples during routing; attach as response headers before returning
+- `traffic.rs`: extend `TrafficEntry` to store routing trace alongside existing fields
+
+---
+
 ## Medium Range
 
 ### TLS for the admin port
