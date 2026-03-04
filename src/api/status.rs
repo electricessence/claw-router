@@ -140,6 +140,7 @@ mod tests {
                         classifier_prompt: None,
                         system_prompt: None,
                         rules: vec![],
+                        ..Default::default()
                     },
                 );
                 m
