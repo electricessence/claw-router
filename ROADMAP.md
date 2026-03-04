@@ -47,6 +47,11 @@ A lightweight, single-binary LLM routing gateway in Rust. No Python. No database
   Header: `X-LMG-Priority: <integer>` on any request to the client API.
   *Note:* cloud providers (Anthropic, OpenRouter) currently bypass the gate via a hardcoded heuristic.
   This will be replaced by explicit `queue_id` config — see the Long Range priority section below.
+- **`request_timeout_ms` gateway-level timeout**: hard wall-clock timeout applied to the entire
+  dispatch attempt (all retries included). When a client disconnects mid-request, the backend future
+  is dropped, the Ollama connection is closed, and the priority gate permit is released immediately —
+  preventing ghost requests from jamming queued work.
+  Configured in `[gateway]`; absent = no timeout (legacy behaviour unchanged).
 
 ---
 
