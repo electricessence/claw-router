@@ -128,6 +128,62 @@ Both are optional and fire async so they don't add latency to the request path.
 
 ---
 
+### Profile cascade routing (hierarchical `route_to`)
+
+Currently, `route_to` in classify-mode rules accepts a **tier name**. Allowing it to also accept a **profile name** enables two-level routing without any new API surface.
+
+**How it works:**
+
+When resolving `route_to`, the gateway checks if the value is a known profile name before checking tiers. If it is a profile, the request re-enters that profile's routing loop (same request, same process, same HTTP — no external round-trip). A depth counter prevents infinite cycles.
+
+**Example — domain dispatch at the first level, complexity dispatch at the second:**
+
+```toml
+# Top-level domain router
+[profiles.auto]
+mode          = "classify"
+classifier    = "local:instant"
+classifier_prompt = """
+Classify the domain. Reply with one label only.
+home         : "Turn on the lights", "Is the door locked?"
+code         : "Write a script", "Create a spreadsheet formula"
+document     : "Write me a report", "Draft an email"
+general      : "Tell me a joke", "Good morning"
+"""
+
+[[profiles.auto.rules]]
+when     = { class = "home" }
+route_to = "ha-auto"           # ← profile name, not a tier
+priority = 30
+
+[[profiles.auto.rules]]
+when     = { class = "code" }
+route_to = "code-auto"         # ← profile name
+priority = 20
+
+# (no rule for general → falls through to tier-label routing → local:instant)
+
+# Second-level: code complexity router
+[profiles.code-auto]
+mode          = "classify"
+classifier    = "local:instant"
+max_auto_tier = "cloud:deep"
+classifier_prompt = """
+How complex is this coding task? Reply with one label only.
+simple  : "Write a single function", "Fix this typo"
+complex : "Architect a full system", "Create an Excel formula with VBA"
+"""
+```
+
+This is additive and backward-compatible. Profiles without `route_to` pointing at other profiles work exactly as today.
+
+**What changes in code (~50 lines new Rust):**
+
+- `router/modes.rs`: in `classify_and_dispatch`, after rule `route_to` lookup, check if the name matches a profile key; if so, re-enter the routing loop for that profile with a depth guard (max depth = 4)
+- `config/profile.rs`: no change — profiles are already stored in a `HashMap<String, ProfileConfig>` accessible to the router
+
+---
+
 ## Medium Range
 
 ### TLS for the admin port
