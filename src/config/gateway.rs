@@ -78,6 +78,22 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub health_window: Option<usize>,
 
+    /// Hard timeout in milliseconds applied at the gateway level to the entire
+    /// dispatch attempt (all retries included).
+    ///
+    /// When a client disconnects before the backend responds, lm-gateway would
+    /// otherwise hold the backend connection open until the backend's own
+    /// `timeout_ms` fires — tying up the priority gate the whole time and
+    /// blocking all lower-priority requests behind the ghost request.
+    ///
+    /// Setting this shorter than the backend's `timeout_ms` ensures the gate
+    /// permit is released promptly and the backend TCP connection is torn down.
+    /// Recommended for single-GPU local deployments (e.g. `120_000`).
+    ///
+    /// When absent, no extra gateway-level timeout is applied.
+    #[serde(default)]
+    pub request_timeout_ms: Option<u64>,
+
     /// Error-rate threshold above which a backend is considered unhealthy
     /// (default: 0.7 = 70 %).
     ///

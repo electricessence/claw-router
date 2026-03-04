@@ -334,6 +334,7 @@ pub(super) async fn dispatch(
 
     let max_retries = config.gateway.max_retries.unwrap_or(0);
     let retry_delay_ms = config.gateway.retry_delay_ms.unwrap_or(200);
+    let request_timeout_ms = config.gateway.request_timeout_ms;
 
     debug!(
         tier = %tier.name,
@@ -344,8 +345,6 @@ pub(super) async fn dispatch(
     );
 
     let client = BackendClient::new(backend_cfg)?;
-    let mut last_err: anyhow::Error = anyhow::anyhow!("no attempts made");
-    let mut delay_ms = retry_delay_ms;
 
     // Detect tool-call requests: non-empty `tools` array in the body.
     let has_tools = body
@@ -354,43 +353,73 @@ pub(super) async fn dispatch(
         .map(|a| !a.is_empty())
         .unwrap_or(false);
 
-    for attempt in 0..=max_retries {
-        if attempt > 0 {
-            let sleep = std::cmp::min(delay_ms, 2_000);
+    // Wrap the full retry loop in an optional gateway-level timeout.
+    //
+    // When the timeout fires the async block future is dropped, which drops the
+    // reqwest future inside it. reqwest cancels the in-flight TCP request to the
+    // backend (Ollama stops generating) and the `_gate_permit` acquired above is
+    // released. This prevents a disconnected client from holding the priority gate
+    // indefinitely and jamming all lower-priority requests behind a ghost request.
+    let attempt_dispatch = async {
+        let mut last_err: anyhow::Error = anyhow::anyhow!("no attempts made");
+        let mut delay_ms = retry_delay_ms;
+
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                let sleep = std::cmp::min(delay_ms, 2_000);
+                warn!(
+                    tier = %tier.name,
+                    attempt,
+                    delay_ms = sleep,
+                    "retrying after backend error"
+                );
+                tokio::time::sleep(tokio::time::Duration::from_millis(sleep)).await;
+                delay_ms = delay_ms.saturating_mul(2);
+            }
+
+            let t0 = std::time::Instant::now();
+            let result = if has_tools {
+                client.tool_call(body.clone()).await
+            } else {
+                client.chat_completions(body.clone()).await
+            };
+            match result {
+                Ok(response) => {
+                    let latency_ms = t0.elapsed().as_millis() as u64;
+                    let entry = TrafficEntry::new(
+                        tier.name.clone(),
+                        tier.backend.clone(),
+                        latency_ms,
+                        true,
+                    );
+                    return Ok((response, entry));
+                }
+                Err(e) => {
+                    last_err = e;
+                }
+            }
+        }
+
+        Err(last_err)
+    };
+
+    if let Some(timeout_ms) = request_timeout_ms {
+        tokio::time::timeout(
+            std::time::Duration::from_millis(timeout_ms),
+            attempt_dispatch,
+        )
+        .await
+        .map_err(|_| {
             warn!(
                 tier = %tier.name,
-                attempt,
-                delay_ms = sleep,
-                "retrying after backend error"
+                timeout_ms,
+                "gateway request timeout — dropping backend connection and releasing gate"
             );
-            tokio::time::sleep(tokio::time::Duration::from_millis(sleep)).await;
-            delay_ms = delay_ms.saturating_mul(2);
-        }
-
-        let t0 = std::time::Instant::now();
-        let result = if has_tools {
-            client.tool_call(body.clone()).await
-        } else {
-            client.chat_completions(body.clone()).await
-        };
-        match result {
-            Ok(response) => {
-                let latency_ms = t0.elapsed().as_millis() as u64;
-                let entry = TrafficEntry::new(
-                    tier.name.clone(),
-                    tier.backend.clone(),
-                    latency_ms,
-                    true,
-                );
-                return Ok((response, entry));
-            }
-            Err(e) => {
-                last_err = e;
-            }
-        }
+            anyhow::anyhow!("gateway request timeout after {timeout_ms}ms")
+        })?
+    } else {
+        attempt_dispatch.await
     }
-
-    Err(last_err)
 }
 
 /// Mode B: try tiers cheapest-first and return the first sufficient response.

@@ -53,6 +53,14 @@ log_level = "info"
 # health_window = 10        # recent requests per backend to consider (0 = disable)
 # health_error_threshold = 0.7  # fraction of errors to flag a backend as unhealthy
 
+# Hard gateway-level timeout covering the entire dispatch attempt (all retries).
+# When a client disconnects before the backend responds, lm-gateway otherwise holds
+# the backend connection until the backend's own timeout_ms fires — tying up the
+# priority gate and jamming queued requests behind the ghost. Setting this shorter
+# than the backend's timeout_ms releases the gate and tears down the TCP connection
+# promptly. Recommended on single-GPU / single-Ollama deployments.
+# request_timeout_ms = 120000
+
 # ---------------------------------------------------------------------------
 # Backends — one entry per LLM provider
 # The `provider` field selects the protocol adapter (default: "openai").
