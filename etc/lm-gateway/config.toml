@@ -118,7 +118,7 @@ classifier        = "local:instant"
 # classifier_think = true    # uncomment to enable CoT for the pre-flight call
 max_auto_tier     = "local:deep"
 classifier_prompt = """\
-Classify this Home Assistant voice command. Reply with ONLY: class=<label>
+Classify this Home Assistant voice command. Reply with ONLY: tier=<tier> class=<label>
 
 greeting     — Hi, thanks, bye, good morning/evening/night (social, no home action)
 chitchat     — joke, trivia, general knowledge question, off-topic
@@ -128,34 +128,34 @@ inquiry      — state query about a specific device or area
 other        — unclear, complex, or doesn't fit any category above
 
 Examples:
-  Hi                               ->  class=greeting
-  Good morning                     ->  class=greeting
-  Thank you                        ->  class=greeting
-  Bye                              ->  class=greeting
-  Goodnight                        ->  class=greeting
-  Good evening                     ->  class=greeting
-  Tell me a joke                   ->  class=chitchat
-  What's the capital of France?    ->  class=chitchat
-  What's the capital of Brazil?    ->  class=chitchat
-  Turn on the light                ->  class=command
-  Turn off the fan                 ->  class=command
-  Lock up                          ->  class=command
-  Turn on the office light         ->  class=command
-  Turn off the kitchen light       ->  class=command
-  Lock the front door              ->  class=command
-  Set the thermostat to 72         ->  class=command
-  Dim the bedroom light to 50%     ->  class=command
-  Yes                              ->  class=conversation
-  No                               ->  class=conversation
-  The bedroom one                  ->  class=conversation
-  All of them                      ->  class=conversation
-  Is the front door locked?        ->  class=inquiry
-  Is the garage door open?         ->  class=inquiry
-  Are all the doors locked?        ->  class=inquiry
-  What lights are still on?        ->  class=inquiry
-  What is the garage door's state? ->  class=inquiry
+  Hi                               ->  tier=instant  class=greeting
+  Good morning                     ->  tier=instant  class=greeting
+  Thank you                        ->  tier=instant  class=greeting
+  Bye                              ->  tier=instant  class=greeting
+  Goodnight                        ->  tier=instant  class=greeting
+  Good evening                     ->  tier=instant  class=greeting
+  Tell me a joke                   ->  tier=fast     class=chitchat
+  What's the capital of France?    ->  tier=fast     class=chitchat
+  What's the capital of Brazil?    ->  tier=fast     class=chitchat
+  Turn on the light                ->  tier=moderate class=command
+  Turn off the fan                 ->  tier=moderate class=command
+  Lock up                          ->  tier=moderate class=command
+  Turn on the office light         ->  tier=moderate class=command
+  Turn off the kitchen light       ->  tier=moderate class=command
+  Lock the front door              ->  tier=moderate class=command
+  Set the thermostat to 72         ->  tier=moderate class=command
+  Dim the bedroom light to 50%     ->  tier=moderate class=command
+  Yes                              ->  tier=moderate class=conversation
+  No                               ->  tier=moderate class=conversation
+  The bedroom one                  ->  tier=moderate class=conversation
+  All of them                      ->  tier=moderate class=conversation
+  Is the front door locked?        ->  tier=deep     class=inquiry
+  Is the garage door open?         ->  tier=deep     class=inquiry
+  Are all the doors locked?        ->  tier=deep     class=inquiry
+  What lights are still on?        ->  tier=deep     class=inquiry
+  What is the garage door's state? ->  tier=deep     class=inquiry
 
-Reply with ONLY the tag. No explanation.\
+Reply with ONLY the two tags. No explanation.\
 """
 
 [[profiles.ha-auto.rules]]
