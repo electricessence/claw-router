@@ -54,11 +54,11 @@ log_level = "info"
 # health_error_threshold = 0.7  # fraction of errors to flag a backend as unhealthy
 
 # Hard gateway-level timeout covering the entire dispatch attempt (all retries).
+# Default: 120000 (2 minutes). Set to 0 to disable entirely (not recommended).
 # When a client disconnects before the backend responds, lm-gateway otherwise holds
 # the backend connection until the backend's own timeout_ms fires — tying up the
-# priority gate and jamming queued requests behind the ghost. Setting this shorter
-# than the backend's timeout_ms releases the gate and tears down the TCP connection
-# promptly. Recommended on single-GPU / single-Ollama deployments.
+# priority gate and jamming queued requests behind the ghost. This ensures the gate
+# is released promptly and the backend TCP connection is torn down.
 # request_timeout_ms = 120000
 
 # ---------------------------------------------------------------------------
@@ -70,6 +70,12 @@ log_level = "info"
 provider    = "ollama"
 base_url    = "http://ollama:11434"
 # No api_key_env needed for local Ollama
+
+# Extend Ollama's context window. The default (4096) is too small for requests
+# that include system prompts, tool definitions, and conversation history.
+# Set to a value that covers your largest expected request without going so
+# high that VRAM pressure kicks in (rule of thumb: 1 KB of KV cache per token).
+# default_options = { num_ctx = 16384 }
 
 [backends.openrouter]
 provider    = "openrouter"

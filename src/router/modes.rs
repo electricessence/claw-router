@@ -116,9 +116,10 @@ pub(super) fn classify_and_resolve<'a>(
         });
 
         let client = BackendClient::new(&backend_cfg)?;
+        let classifier_timeout = std::time::Duration::from_millis(profile.classifier_timeout_ms);
         let ParsedClassification { tier_label: label, think_override, tags } =
-            match client.classify(classifier_body).await {
-                Ok(response) => {
+            match tokio::time::timeout(classifier_timeout, client.classify(classifier_body)).await {
+                Ok(Ok(response)) => {
                     let parsed = parse_classification(&response);
                     debug!(
                         profile = %profile_name,
@@ -129,8 +130,16 @@ pub(super) fn classify_and_resolve<'a>(
                     );
                     parsed
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     warn!(err = %e, profile = %profile_name, "classification call failed — defaulting to first tier");
+                    ParsedClassification { tier_label: "instant".into(), ..Default::default() }
+                }
+                Err(_) => {
+                    warn!(
+                        profile = %profile_name,
+                        timeout_ms = profile.classifier_timeout_ms,
+                        "classifier timed out — defaulting to first tier"
+                    );
                     ParsedClassification { tier_label: "instant".into(), ..Default::default() }
                 }
             };
@@ -334,7 +343,6 @@ pub(super) async fn dispatch(
 
     let max_retries = config.gateway.max_retries.unwrap_or(0);
     let retry_delay_ms = config.gateway.retry_delay_ms.unwrap_or(200);
-    let request_timeout_ms = config.gateway.request_timeout_ms;
 
     debug!(
         tier = %tier.name,
@@ -402,6 +410,9 @@ pub(super) async fn dispatch(
 
         Err(last_err)
     };
+
+    // Apply gateway-level timeout (default 120s). A value of 0 disables it.
+    let request_timeout_ms = config.gateway.request_timeout_ms.filter(|&ms| ms > 0);
 
     if let Some(timeout_ms) = request_timeout_ms {
         tokio::time::timeout(

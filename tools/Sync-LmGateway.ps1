@@ -94,7 +94,13 @@ Write-Host "Pushing $($filesToPush.Count) file(s) to LXC $LxcId ..." -Foreground
 
 foreach ($rel in $filesToPush) {
     $local  = Join-Path $RepoRoot $rel
-    $remote = "$ProjectPath/$($rel.Replace('\', '/'))"
+    # Config files under etc/lm-gateway/ are deployed directly to /etc/lm-gateway/
+    # (the systemd service reads from there, not the source tree).
+    $remote = if ($rel -match '^etc/lm-gateway/(.+)$') {
+        "/etc/lm-gateway/$($Matches[1])"
+    } else {
+        "$ProjectPath/$($rel.Replace('\\', '/'))"
+    }
     Write-Host "  $rel" -ForegroundColor DarkCyan
     Push-File -LocalFile $local -RemoteFile $remote
 }

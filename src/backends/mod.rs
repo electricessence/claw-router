@@ -56,7 +56,10 @@ impl BackendClient {
                 Self::OpenAI(OpenAIAdapter::new(base_url, cfg.timeout_ms, api_key))
             }
             Provider::Ollama => {
-                Self::Ollama(OllamaAdapter::new(base_url, cfg.timeout_ms))
+                let opts = cfg.default_options
+                    .as_ref()
+                    .and_then(|v| v.as_object().cloned());
+                Self::Ollama(OllamaAdapter::new(base_url, cfg.timeout_ms, opts))
             }
             Provider::Anthropic => {
                 let key = api_key.ok_or_else(|| {

@@ -15,7 +15,8 @@ traffic_log_capacity = 500
 log_level            = "info"
 admin_token_env      = "LMG_ADMIN_TOKEN"
 # Unauthenticated LAN requests fall through to this profile instead of 401.
-public_profile       = "ha-auto"
+# claw-agent: 100% local processing, classify mode tuned for agent workloads.
+public_profile       = "claw-agent"
 
 # ---------------------------------------------------------------------------
 # Backend — local Ollama on the same container
@@ -27,6 +28,11 @@ base_url    = "http://127.0.0.1:11434"
 # (model load can take 30–90 s) and avoids the 30-second default cutoff.
 # Streaming requests use a separate no-timeout client and are unaffected.
 timeout_ms  = 300000
+# Extend Ollama's context window beyond the default 4096 tokens.
+# Agent requests include system prompts, tool definitions, and conversation
+# history that can easily exceed 4096 tokens — without this, Ollama silently
+# truncates the input, causing degraded or failed responses.
+default_options = { num_ctx = 16384 }
 
 # ---------------------------------------------------------------------------
 # Tiers — ordered by cost/latency (cheapest first)
@@ -91,6 +97,11 @@ think   = true
 "hint:deep"      = "local:deep"
 "hint:max"       = "local:max"
 
+# Agent alias — "auto" resolves to the classifier entry tier.
+# The claw-agent profile handles actual routing via classification.
+"auto"           = "local:instant"
+"auto:latest"    = "local:instant"
+
 # ---------------------------------------------------------------------------
 # Clients — API key → profile bindings (keys loaded from env vars)
 # ---------------------------------------------------------------------------
@@ -98,6 +109,10 @@ think   = true
 [[clients]]
 key_env = "LMG_HA_KEY"
 profile = "ha-auto"
+
+[[clients]]
+key_env = "LMG_AGENT_KEY"
+profile = "claw-agent"
 
 # ---------------------------------------------------------------------------
 # Profiles — these are the "models" Ollama clients see in /api/tags
@@ -313,6 +328,43 @@ fast       — simple question with mild uncertainty                 (1.7b + CoT
 moderate   — explanation, code, analysis, device commands          (7b)
 deep       — complex code, architecture, detailed analysis         (14b)
 max        — hardest problems, multi-step reasoning, design        (14b + CoT)
+
+Reply with one word only: instant, fast, moderate, deep, or max.\
+"""
+
+# ---------------------------------------------------------------------------
+# "claw-agent" — profile for ZeroClaw AI agents (100% local processing)
+#
+# Agents generate tool calls, code, SSH commands, config edits, and multi-step
+# plans. The classifier routes by cognitive load:
+#   instant  — acks, status pings, simple tool calls (list files, echo)
+#   fast     — single-tool invocations, short answers with mild reasoning
+#   moderate — code generation, config edits, multi-tool sequences
+#   deep     — architecture decisions, complex debugging, long code blocks
+#   max      — hardest: multi-file refactors, design docs, failure analysis
+# ---------------------------------------------------------------------------
+[profiles.claw-agent]
+mode              = "classify"
+classifier        = "local:instant"
+max_auto_tier     = "local:max"
+classifier_prompt = """\
+Classify this AI agent request by cognitive load. Reply with exactly one label.
+
+instant    — acknowledgment, status check, trivial tool call              (1.7b)
+fast       — single tool invocation, short factual answer, simple lookup  (1.7b + CoT)
+moderate   — code generation, config edit, shell script, multi-tool call  (7b)
+deep       — complex debugging, architecture analysis, long code blocks   (14b)
+max        — multi-file refactor, system design, failure root-cause       (14b + CoT)
+
+Examples:
+  List files in /tmp                    -> instant
+  What is my IP address?                -> instant
+  Check if nginx is running             -> fast
+  Read and summarize this config file   -> fast
+  Write a bash script to backup logs    -> moderate
+  Edit the docker-compose to add a vol  -> moderate
+  Debug why the build fails on step 3   -> deep
+  Refactor the auth module into 3 files -> max
 
 Reply with one word only: instant, fast, moderate, deep, or max.\
 """

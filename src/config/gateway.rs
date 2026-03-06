@@ -79,7 +79,7 @@ pub struct GatewayConfig {
     pub health_window: Option<usize>,
 
     /// Hard timeout in milliseconds applied at the gateway level to the entire
-    /// dispatch attempt (all retries included).
+    /// dispatch attempt (all retries included). Default: 120 000 (2 minutes).
     ///
     /// When a client disconnects before the backend responds, lm-gateway would
     /// otherwise hold the backend connection open until the backend's own
@@ -88,10 +88,9 @@ pub struct GatewayConfig {
     ///
     /// Setting this shorter than the backend's `timeout_ms` ensures the gate
     /// permit is released promptly and the backend TCP connection is torn down.
-    /// Recommended for single-GPU local deployments (e.g. `120_000`).
     ///
-    /// When absent, no extra gateway-level timeout is applied.
-    #[serde(default)]
+    /// Set to `0` to disable the gateway-level timeout entirely (not recommended).
+    #[serde(default = "defaults::request_timeout_ms")]
     pub request_timeout_ms: Option<u64>,
 
     /// Error-rate threshold above which a backend is considered unhealthy
@@ -183,6 +182,18 @@ pub struct BackendConfig {
     /// `"open_router"` to enable OpenRouter-specific headers.
     #[serde(default)]
     pub provider: Provider,
+
+    /// Default options merged into every request sent to an Ollama backend.
+    /// Requested values in the incoming body always take precedence — these are
+    /// only applied when absent. Only used when `provider = "ollama"`.
+    ///
+    /// Most useful for controlling the context window:
+    /// ```toml
+    /// [backends.ollama]
+    /// default_options = { num_ctx = 16384 }
+    /// ```
+    #[serde(default)]
+    pub default_options: Option<serde_json::Value>,
 }
 
 impl BackendConfig {
@@ -223,4 +234,33 @@ pub(super) mod defaults {
     pub fn admin_port() -> u16 { 8081 }
     pub fn traffic_log_capacity() -> usize { 500 }
     pub fn timeout_ms() -> u64 { 30_000 }
+    pub fn request_timeout_ms() -> Option<u64> { Some(120_000) }
+    pub fn classifier_timeout_ms() -> u64 { 10_000 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    #[test]
+    fn default_options_parses_from_toml() {
+        let toml = r#"
+[gateway]
+client_port = 8080
+admin_port  = 8081
+
+[backends.ollama]
+provider    = "ollama"
+base_url    = "http://127.0.0.1:11434"
+timeout_ms  = 300000
+default_options = { num_ctx = 16384 }
+"#;
+        let config: Config = toml::from_str(toml).expect("TOML parse failed");
+        let ollama = config.backends.get("ollama").expect("ollama backend missing");
+        let opts = ollama.default_options.as_ref().expect("default_options is None");
+        let map = opts.as_object().expect("default_options is not an object");
+        let num_ctx = map.get("num_ctx").expect("num_ctx missing");
+        assert_eq!(num_ctx.as_i64(), Some(16384), "num_ctx should be 16384, got: {num_ctx:?}");
+    }
 }

@@ -99,6 +99,14 @@ pub struct ProfileConfig {
     #[serde(default)]
     pub classifier_think: Option<bool>,
 
+    /// Timeout in milliseconds for the classifier pre-flight call. Default: 10 000 (10 s).
+    ///
+    /// Classification should be fast (typically 200–600 ms). This timeout prevents
+    /// a stuck backend from blocking the entire request for minutes. When the
+    /// timeout fires, the classifier defaults to the first tier (cheapest).
+    #[serde(default = "super::gateway::defaults::classifier_timeout_ms")]
+    pub classifier_timeout_ms: u64,
+
     /// Optional system prompt prepended to every request forwarded through this profile.
     ///
     /// When set, this text is injected as a `role = "system"` message at the front of

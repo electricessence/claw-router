@@ -25,11 +25,18 @@ pub struct OllamaAdapter {
     /// Streaming requests — no request-level timeout.
     stream_client: Client,
     base_url: String,
+    /// Default options injected into every request's `options` field.
+    /// Keys already present in the caller's body are never overridden.
+    default_options: Option<serde_json::Map<String, Value>>,
 }
 
 impl OllamaAdapter {
     /// Build an Ollama adapter. No API key is required for typical local deployments.
-    pub fn new(base_url: String, timeout_ms: u64) -> Self {
+    pub fn new(
+        base_url: String,
+        timeout_ms: u64,
+        default_options: Option<serde_json::Map<String, Value>>,
+    ) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
@@ -39,7 +46,22 @@ impl OllamaAdapter {
             .build()
             .expect("failed to build streaming reqwest client");
 
-        Self { client, stream_client, base_url }
+        Self { client, stream_client, base_url, default_options }
+    }
+
+    /// Merge `self.default_options` into `body["options"]`, never overriding
+    /// keys that the caller already set.
+    fn apply_default_options(&self, body: &mut Value) {
+        let Some(defaults) = &self.default_options else { return };
+        let Some(obj) = body.as_object_mut() else { return };
+        let options = obj
+            .entry("options")
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        if let Some(opts_obj) = options.as_object_mut() {
+            for (k, v) in defaults {
+                opts_obj.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
     }
 
     /// Forward a chat completions request via Ollama's OpenAI-compat endpoint.
@@ -49,6 +71,7 @@ impl OllamaAdapter {
         if let Some(obj) = body.as_object_mut() {
             obj.entry("keep_alive").or_insert(serde_json::json!(-1));
         }
+        self.apply_default_options(&mut body);
         let url = format!("{}/v1/chat/completions", self.base_url);
         let response = self
             .client
@@ -77,6 +100,7 @@ impl OllamaAdapter {
         if let Some(obj) = body.as_object_mut() {
             obj.entry("keep_alive").or_insert(serde_json::json!(-1));
         }
+        self.apply_default_options(&mut body);
         let url = format!("{}/v1/chat/completions", self.base_url);
         let response = self
             .stream_client
@@ -103,6 +127,7 @@ impl OllamaAdapter {
             obj.entry("keep_alive").or_insert(serde_json::json!(-1));
             obj.insert("stream".into(), serde_json::json!(true));
         }
+        self.apply_default_options(&mut body);
         let url = format!("{}/api/chat", self.base_url);
         let response = self
             .stream_client
@@ -188,6 +213,64 @@ impl OllamaAdapter {
             obj.entry("keep_alive").or_insert(serde_json::json!(-1));
             obj.insert("stream".into(), serde_json::json!(false));
         }
+
+        // Translate conversation history from OpenAI format to Ollama native format.
+        //
+        // OpenAI tool calls carry `arguments` as a JSON *string* and include `id` /
+        // `type` fields that Ollama native `/api/chat` doesn't understand. Sending the
+        // OpenAI-format history verbatim causes Ollama's Go template engine to fail
+        // with "Value looks like object, but can't find closing '}' symbol" when it
+        // tries to render the assistant turn on the second (tool-result) call.
+        //
+        // Additionally, tool result messages carry `tool_call_id` which is an
+        // OpenAI-specific field that Ollama native ignores but some Ollama versions
+        // reject.
+        if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
+            for msg in messages.iter_mut() {
+                let role = msg.get("role").and_then(Value::as_str).unwrap_or("").to_owned();
+                if role == "assistant" {
+                    if let Some(tc_arr) = msg.get("tool_calls").and_then(Value::as_array).cloned() {
+                        let native_calls: Vec<Value> = tc_arr
+                            .iter()
+                            .map(|tc| {
+                                let func = tc.get("function").cloned().unwrap_or(Value::Null);
+                                let name = func
+                                    .get("name")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                                    .to_owned();
+                                // OpenAI: `arguments` is a JSON-encoded string.
+                                // Ollama native: `arguments` must be a JSON object.
+                                let args = func
+                                    .get("arguments")
+                                    .and_then(|a| {
+                                        a.as_str()
+                                            .and_then(|s| serde_json::from_str(s).ok())
+                                            .or_else(|| Some(a.clone()))
+                                    })
+                                    .unwrap_or_else(|| {
+                                        Value::Object(serde_json::Map::new())
+                                    });
+                                serde_json::json!({
+                                    "function": { "name": name, "arguments": args }
+                                })
+                            })
+                            .collect();
+                        if let Some(obj) = msg.as_object_mut() {
+                            obj.insert("tool_calls".to_owned(), Value::Array(native_calls));
+                        }
+                    }
+                } else if role == "tool" {
+                    // Strip the OpenAI-specific `tool_call_id` field — Ollama native
+                    // identifies tool results by position, not by ID.
+                    if let Some(obj) = msg.as_object_mut() {
+                        obj.remove("tool_call_id");
+                    }
+                }
+            }
+        }
+
+        self.apply_default_options(body);
         let model = body
             .get("model")
             .and_then(Value::as_str)
@@ -302,7 +385,8 @@ fn parse_plain_text_tool_calls(content: &str) -> Option<Vec<Value>> {
     /// [`parse_classification_label`] logic.
     ///
     /// [`parse_classification_label`]: crate::router::parse_classification_label
-    pub async fn classify(&self, body: Value) -> anyhow::Result<Value> {
+    pub async fn classify(&self, mut body: Value) -> anyhow::Result<Value> {
+        self.apply_default_options(&mut body);
         let url = format!("{}/api/chat", self.base_url);
         let response = self
             .client
