@@ -118,6 +118,7 @@ mod tests {
                 health_window: None,
                 health_error_threshold: None,
                 public_profile: None,
+                request_timeout_ms: None,
             },
             backends: std::collections::HashMap::new(),
             tiers: vec![TierConfig {
@@ -236,6 +237,7 @@ mod tests {
                 api_key_secret: None,
                 timeout_ms: 30_000,
                 provider: crate::config::Provider::OpenAI,
+                default_options: None,
             },
         );
         let config = crate::config::Config {
@@ -251,6 +253,7 @@ mod tests {
                 health_window: None,
                 health_error_threshold: None,
                 public_profile: None,
+                request_timeout_ms: None,
             },
             backends,
             tiers: vec![],

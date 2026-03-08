@@ -510,6 +510,7 @@ mod tests {
                 health_window: None,
                 health_error_threshold: None,
                 public_profile: None,
+                request_timeout_ms: None,
             },
             backends: {
                 let mut m = std::collections::HashMap::new();
@@ -521,6 +522,7 @@ mod tests {
                         api_key_secret: None,
                         timeout_ms: 5_000,
                         provider: crate::config::Provider::default(),
+                        default_options: None,
                     },
                 );
                 m
@@ -674,6 +676,7 @@ mod tests {
                     health_window: None,
                     health_error_threshold: None,
                     public_profile: None,
+                    request_timeout_ms: None,
                 },
                 backends: std::collections::HashMap::new(),
                 tiers: vec![],

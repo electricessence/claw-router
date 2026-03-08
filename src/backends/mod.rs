@@ -192,6 +192,7 @@ mod tests {
             api_key_secret: None,
             timeout_ms: 5_000,
             provider: Provider::OpenAI,
+            default_options: None,
         }
     }
 
@@ -217,6 +218,7 @@ mod tests {
             api_key_secret: None,
             timeout_ms: 5_000,
             provider: Provider::OpenAI,
+            default_options: None,
         };
         assert!(BackendClient::new(&cfg).is_ok());
     }
@@ -230,6 +232,7 @@ mod tests {
             api_key_secret: None,
             timeout_ms: 5_000,
             provider: Provider::OpenAI,
+            default_options: None,
         };
         assert!(BackendClient::new(&cfg).is_ok());
     }
@@ -246,6 +249,7 @@ mod tests {
             api_key_secret: None,
             timeout_ms: 5_000,
             provider: Provider::OpenAI,
+            default_options: None,
         };
         let resolved = cfg.api_key();
         assert_eq!(resolved.as_deref(), Some("sk-test-resolved"));
@@ -260,6 +264,7 @@ mod tests {
             api_key_secret: None,
             timeout_ms: 5_000,
             provider: Provider::OpenAI,
+            default_options: None,
         };
         assert!(cfg.api_key().is_none());
     }

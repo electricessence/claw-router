@@ -280,7 +280,7 @@ inquiry      What's the thermostat?     → moderate* ○  HassGetState (correct
 | `Invoke-TierMinimum.ps1` | Minimum tier probe — tests each case against each tier directly |
 | `Invoke-ClassifyAB.ps1` | Multi-variant A/B classifier prompt harness |
 
-All scripts are parameterized PowerShell, rerunnable, and designed to produce structured output for comparison across runs.
+All scripts are PowerShell-based, rerunnable, and designed to produce structured output for comparison across runs.
 
 ---
 
