@@ -3,7 +3,7 @@ name = "lm-gateway-rs"
 version = "0.3.0"
 edition = "2021"
 description = "Minimal LLM routing gateway — single binary, no Python, works anywhere"
-license = "MIT"
+license = "AGPL-3.0-only"
 repository = "https://github.com/electricessence/lm-gateway-rs"
 readme = "README.md"
 
@@ -46,6 +46,9 @@ chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 dashmap = "6"   # concurrent hashmap for in-memory traffic log
 bytes = "1"
+
+# Token estimation
+tiktoken-rs = "0.9"
 
 [features]
 # native-tls: uses the platform TLS stack (schannel on Windows, OpenSSL on Linux).

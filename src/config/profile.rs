@@ -21,6 +21,17 @@ pub struct TierConfig {
     /// `true` enables it (slower but deeper reasoning). Absent = no injection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub think: Option<bool>,
+
+    /// Context window size (in tokens) for this tier's model.
+    ///
+    /// When set, the router estimates the incoming request's token count and
+    /// skips this tier if the estimate exceeds the window — automatically
+    /// bumping the request to the next tier that can fit it. This prevents
+    /// silent truncation at the model level.
+    ///
+    /// Leave unset to disable context-window gating for this tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context_tokens: Option<u32>,
 }
 
 /// A routing rule evaluated against semantic classification tags.

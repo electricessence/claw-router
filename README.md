@@ -5,7 +5,7 @@
 > **Ultra-lightweight LLM routing gateway written in Rust.**  
 > Single binary. No Python. No database. No bloat.
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
 
 ---
@@ -251,4 +251,4 @@ src/
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+AGPL-3.0 — see [LICENSE](LICENSE).

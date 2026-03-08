@@ -200,12 +200,14 @@ mod tests {
                     backend: "mock".into(),
                     model: "fast-model".into(),
                     think: None,
+                    max_context_tokens: None,
                 },
                 TierConfig {
                     name: "cloud:economy".into(),
                     backend: "mock".into(),
                     model: "economy-model".into(),
                     think: None,
+                    max_context_tokens: None,
                 },
             ],
             aliases: {

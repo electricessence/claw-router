@@ -142,6 +142,26 @@ model   = "anthropic/claude-sonnet-4-5"
 
 > **Naming convention:** `<location>:<speed>` — e.g. `local:instant`, `cloud:fast`. The classifier resolves tier labels by matching the label as a suffix of the tier name, so `instant` → first tier ending in `instant`. Stick to this pattern and routing just works.
 
+### Context-Window Gating
+
+Set `max_context_tokens` on a tier to declare its model's context window size. When a request's estimated token count exceeds a tier's window, the router automatically bumps the request to the next tier that can fit it — no silent truncation, no wasted inference.
+
+```toml
+[[tiers]]
+name               = "local:instant"
+backend            = "ollama"
+model              = "qwen3:1.7b"
+max_context_tokens = 8192
+
+[[tiers]]
+name               = "local:deep"
+backend            = "ollama"
+model              = "qwen2.5:7b-instruct"
+max_context_tokens = 32768
+```
+
+Token estimation uses BPE tokenization via the `o200k_base` encoder (GPT-4o family), which closely matches modern tokenizers across model families. A 10% safety margin is applied to ensure the estimate is a pessimistic upper bound. Tiers without `max_context_tokens` are assumed to accept any request size.
+
 ---
 
 ## `[aliases]` — Friendly Model Names

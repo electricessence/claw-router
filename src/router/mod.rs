@@ -43,6 +43,95 @@ pub mod priority;
 
 use priority::TierPriorityGate;
 
+// ---------------------------------------------------------------------------
+// Token estimation
+// ---------------------------------------------------------------------------
+
+/// Token estimate for a JSON request body using BPE tokenization.
+///
+/// Uses the `o200k_base` tokenizer (GPT-4o family) as the reference encoder.
+/// Modern BPE tokenizers agree within ~10-15% across model families, so this
+/// gives a reliable estimate even for non-OpenAI models like Qwen and Llama.
+///
+/// A 10% safety margin is applied on top to ensure the estimate is a pessimistic
+/// upper bound — we'd rather bump up a tier unnecessarily than overflow a
+/// context window.
+pub(crate) fn estimate_request_tokens(body: &Value) -> u32 {
+    let bpe = tiktoken_rs::get_bpe_from_model("gpt-4o")
+        .expect("gpt-4o BPE should be available in tiktoken_rs");
+
+    let messages = body.pointer("/messages").and_then(Value::as_array);
+    let tools = body.pointer("/tools").and_then(Value::as_array);
+
+    let mut token_count: usize = 0;
+
+    if let Some(msgs) = messages {
+        for msg in msgs {
+            // Per-message overhead (role, separators) — OpenAI uses ~4 tokens per message
+            token_count += 4;
+            // Handle both string and array-of-parts content (for multimodal requests).
+            if let Some(content_val) = msg.get("content") {
+                match content_val {
+                    Value::String(text) => {
+                        token_count += bpe.encode_ordinary(text).len();
+                    }
+                    Value::Array(parts) => {
+                        for part in parts {
+                            if let Some("text") = part.get("type").and_then(Value::as_str) {
+                                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                                    token_count += bpe.encode_ordinary(text).len();
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(role) = msg.get("role").and_then(Value::as_str) {
+                token_count += bpe.encode_ordinary(role).len();
+            }
+            // Tool call results can be large JSON blobs
+            if let Some(tc) = msg.get("tool_calls") {
+                let tc_str = tc.to_string();
+                token_count += bpe.encode_ordinary(&tc_str).len();
+            }
+        }
+        // Reply priming overhead
+        token_count += 2;
+    }
+
+    if let Some(tool_defs) = tools {
+        let defs_str = serde_json::to_string(tool_defs).unwrap_or_default();
+        token_count += bpe.encode_ordinary(&defs_str).len();
+    }
+
+    // 10% safety margin — round up to ensure pessimistic upper bound
+    let with_margin = (token_count as f64 * 1.1).ceil() as u32;
+    with_margin
+}
+
+/// Find the lowest tier whose `max_context_tokens` can fit the estimated token count.
+///
+/// Iterates the tier ladder from `start_idx` upward through `candidates`. Returns
+/// the index of the first tier that fits, or `candidates.len() - 1` if none fit
+/// (last tier is always used as a fallback — better to try than to reject).
+///
+/// Tiers without `max_context_tokens` set are assumed to fit any request.
+pub(crate) fn find_min_tier_for_tokens(
+    candidates: &[crate::config::TierConfig],
+    estimated_tokens: u32,
+    start_idx: usize,
+) -> usize {
+    for i in start_idx..candidates.len() {
+        match candidates[i].max_context_tokens {
+            Some(max) if estimated_tokens > max => continue, // won't fit
+            _ => return i, // fits or uncapped
+        }
+    }
+    // Nothing fits — fall back to last tier (best chance of largest context)
+    candidates.len().saturating_sub(1)
+}
+
 /// Shared application state injected into every request handler via [`axum::extract::State`].
 pub struct RouterState {
     /// Atomically-swappable live config; the lock is held only for the duration
@@ -203,8 +292,26 @@ pub async fn route(
         .profile(profile_name)
         .context("no matching profile and no default profile configured")?;
 
-    let (target_tier, model_hint) =
+    let (mut target_tier, model_hint) =
         resolve_target_tier(&config, profile, &request_body, expert_gate)?;
+
+    // Context-window gating for dispatch mode only. Classify and escalate modes
+    // handle their own gating inside classify_and_resolve() / escalate().
+    if profile.mode == RoutingMode::Dispatch {
+        let estimated_tokens = estimate_request_tokens(&request_body);
+        let tier_idx = config.tiers.iter().position(|t| t.name == target_tier.name).unwrap_or(0);
+        let min_idx = find_min_tier_for_tokens(&config.tiers, estimated_tokens, tier_idx);
+        if min_idx > tier_idx {
+            let bumped = &config.tiers[min_idx];
+            debug!(
+                estimated_tokens,
+                from = %target_tier.name,
+                to = %bumped.name,
+                "context-window floor — bumping tier"
+            );
+            target_tier = bumped;
+        }
+    }
 
     tracing::Span::current().record("tier", target_tier.name.as_str());
 
@@ -269,8 +376,25 @@ pub async fn route_stream(
         .profile(profile_name)
         .context("no matching profile and no default profile configured")?;
 
-    let (resolved_tier, model_hint) =
+    let (mut resolved_tier, model_hint) =
         resolve_target_tier(&config, profile, &request_body, expert_gate)?;
+
+    // Context-window gating for dispatch mode only (classify/escalate handle it internally).
+    if profile.mode == RoutingMode::Dispatch {
+        let estimated_tokens = estimate_request_tokens(&request_body);
+        let tier_idx = config.tiers.iter().position(|t| t.name == resolved_tier.name).unwrap_or(0);
+        let min_idx = find_min_tier_for_tokens(&config.tiers, estimated_tokens, tier_idx);
+        if min_idx > tier_idx {
+            let bumped = &config.tiers[min_idx];
+            debug!(
+                estimated_tokens,
+                from = %resolved_tier.name,
+                to = %bumped.name,
+                "context-window floor — bumping tier (stream)"
+            );
+            resolved_tier = bumped;
+        }
+    }
 
     // Inject the profile system prompt before dispatching to any backend.
     if let Some(prompt) = profile.system_prompt.as_deref() {
@@ -533,12 +657,14 @@ mod tests {
                     backend: "mock".into(),
                     model: "fast-model".into(),
                     think: None,
+                    max_context_tokens: None,
                 },
                 TierConfig {
                     name: "cloud:economy".into(),
                     backend: "mock".into(),
                     model: "economy-model".into(),
                     think: None,
+                    max_context_tokens: None,
                 },
             ],
             aliases: {
@@ -598,6 +724,107 @@ mod tests {
         assert_eq!(entry.tier, "local:fast");
         assert_eq!(entry.backend, "mock");
         assert!(entry.success);
+    }
+
+    #[tokio::test]
+    async fn dispatch_bumps_tier_when_context_window_exceeded() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(long_response(
+                "Response from the bumped tier after context-window gating kicked in.",
+            )))
+            .mount(&server)
+            .await;
+
+        // Build a config where the first tier has a tiny max_context_tokens
+        let config = crate::config::Config {
+            gateway: GatewayConfig {
+                client_port: 8080,
+                admin_port: 8081,
+                traffic_log_capacity: 100,
+                log_level: None,
+                rate_limit_rpm: None,
+                admin_token_env: None,
+                max_retries: None,
+                retry_delay_ms: None,
+                health_window: None,
+                health_error_threshold: None,
+                public_profile: None,
+                request_timeout_ms: None,
+            },
+            backends: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    "mock".into(),
+                    BackendConfig {
+                        base_url: server.uri(),
+                        api_key_env: None,
+                        api_key_secret: None,
+                        timeout_ms: 5_000,
+                        provider: crate::config::Provider::default(),
+                        default_options: None,
+                    },
+                );
+                m
+            },
+            tiers: vec![
+                TierConfig {
+                    name: "tiny".into(),
+                    backend: "mock".into(),
+                    model: "tiny-model".into(),
+                    think: None,
+                    max_context_tokens: Some(10), // Very small — will overflow
+                },
+                TierConfig {
+                    name: "big".into(),
+                    backend: "mock".into(),
+                    model: "big-model".into(),
+                    think: None,
+                    max_context_tokens: None, // No limit
+                },
+            ],
+            aliases: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("hint:fast".into(), "tiny".into());
+                m
+            },
+            profiles: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    "default".into(),
+                    ProfileConfig {
+                        mode: RoutingMode::Dispatch,
+                        classifier: "tiny".into(),
+                        max_auto_tier: "big".into(),
+                        expert_requires_flag: false,
+                        rate_limit_rpm: None,
+                        classifier_prompt: None,
+                        classifier_think: None,
+                        system_prompt: None,
+                        rules: vec![],
+                        ..Default::default()
+                    },
+                );
+                m
+            },
+            clients: vec![],
+        };
+        let state = RouterState::new(
+            Arc::new(config),
+            std::path::PathBuf::default(),
+            Arc::new(TrafficLog::new(100)),
+        );
+
+        // Send a request that resolves to "tiny" but whose tokens exceed 10
+        let body = json!({
+            "model": "hint:fast",
+            "messages": [{"role": "user", "content": "This message is long enough to exceed the tiny tier context window limit easily."}]
+        });
+
+        let (_, entry) = route(&state, body, None, None, 0, false, false).await.unwrap();
+        // Should have been bumped from "tiny" to "big"
+        assert_eq!(entry.tier, "big", "expected context-window gating to bump from tiny to big");
     }
 
     #[tokio::test]
@@ -793,6 +1020,7 @@ mod tests {
                 backend: "b".into(),
                 model: "m".into(),
                 think: None,
+                max_context_tokens: None,
             })
             .collect()
     }
@@ -972,5 +1200,97 @@ mod tests {
             assert_eq!(label, p.tier_label, "content: {content}");
             assert_eq!(think, p.think_override, "content: {content}");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Token estimation and context-window gating
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn estimate_tokens_from_messages() {
+        let body = json!({
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "Hello world"}
+            ]
+        });
+        // BPE-based: actual tokens + per-message overhead + reply priming + 10% margin
+        let tokens = estimate_request_tokens(&body);
+        // "You are a helpful assistant." ≈ 6 tokens, "Hello world" ≈ 2 tokens,
+        // roles ≈ 2 tokens, 2×4 message overhead + 2 priming = 10 overhead
+        // Total ≈ 20, with margin ≈ 22. We just check plausible range.
+        assert!(tokens >= 15 && tokens <= 35, "expected 15-35, got {tokens}");
+    }
+
+    #[test]
+    fn estimate_tokens_includes_tools() {
+        let body = json!({
+            "messages": [{"role": "user", "content": "help"}],
+            "tools": [{"type": "function", "function": {"name": "get_weather", "description": "Get weather"}}]
+        });
+        let tokens = estimate_request_tokens(&body);
+        // "help" = 1 token, plus tool JSON tokenization, overhead, margin
+        assert!(tokens > 5, "should include tool definition tokens, got {tokens}");
+    }
+
+    #[test]
+    fn estimate_tokens_empty_body() {
+        let body = json!({});
+        assert_eq!(estimate_request_tokens(&body), 0);
+    }
+
+    #[test]
+    fn find_min_tier_skips_small_context() {
+        use crate::config::TierConfig;
+        let tiers = vec![
+            TierConfig { name: "small".into(), backend: "b".into(), model: "m".into(), think: None, max_context_tokens: Some(4096) },
+            TierConfig { name: "medium".into(), backend: "b".into(), model: "m".into(), think: None, max_context_tokens: Some(32768) },
+            TierConfig { name: "large".into(), backend: "b".into(), model: "m".into(), think: None, max_context_tokens: None },
+        ];
+        // 5000 tokens exceeds small (4096) but fits medium (32768)
+        assert_eq!(find_min_tier_for_tokens(&tiers, 5000, 0), 1);
+    }
+
+    #[test]
+    fn find_min_tier_fits_first() {
+        use crate::config::TierConfig;
+        let tiers = vec![
+            TierConfig { name: "small".into(), backend: "b".into(), model: "m".into(), think: None, max_context_tokens: Some(8192) },
+            TierConfig { name: "large".into(), backend: "b".into(), model: "m".into(), think: None, max_context_tokens: None },
+        ];
+        // 2000 tokens fits in small (8192)
+        assert_eq!(find_min_tier_for_tokens(&tiers, 2000, 0), 0);
+    }
+
+    #[test]
+    fn find_min_tier_uncapped_always_fits() {
+        use crate::config::TierConfig;
+        let tiers = vec![
+            TierConfig { name: "uncapped".into(), backend: "b".into(), model: "m".into(), think: None, max_context_tokens: None },
+        ];
+        assert_eq!(find_min_tier_for_tokens(&tiers, 999999, 0), 0);
+    }
+
+    #[test]
+    fn find_min_tier_all_too_small_falls_back_to_last() {
+        use crate::config::TierConfig;
+        let tiers = vec![
+            TierConfig { name: "tiny".into(), backend: "b".into(), model: "m".into(), think: None, max_context_tokens: Some(1024) },
+            TierConfig { name: "small".into(), backend: "b".into(), model: "m".into(), think: None, max_context_tokens: Some(2048) },
+        ];
+        // 10000 tokens exceeds both — falls back to last
+        assert_eq!(find_min_tier_for_tokens(&tiers, 10000, 0), 1);
+    }
+
+    #[test]
+    fn find_min_tier_respects_start_idx() {
+        use crate::config::TierConfig;
+        let tiers = vec![
+            TierConfig { name: "small".into(), backend: "b".into(), model: "m".into(), think: None, max_context_tokens: Some(8192) },
+            TierConfig { name: "medium".into(), backend: "b".into(), model: "m".into(), think: None, max_context_tokens: Some(32768) },
+            TierConfig { name: "large".into(), backend: "b".into(), model: "m".into(), think: None, max_context_tokens: None },
+        ];
+        // start_idx=1 means we skip "small" entirely
+        assert_eq!(find_min_tier_for_tokens(&tiers, 100, 1), 1);
     }
 }

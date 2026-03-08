@@ -292,6 +292,7 @@ mod tests {
                     backend: "mock".into(),
                     model: "fast-model".into(),
                     think: None,
+                    max_context_tokens: None,
                 },
             ],
             aliases: {
