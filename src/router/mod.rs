@@ -296,6 +296,25 @@ pub async fn route(
         .profile(profile_name)
         .context("no matching profile and no default profile configured")?;
 
+    // Reply mode: return a static response without resolving tiers or calling backends.
+    if profile.mode == RoutingMode::Reply {
+        let model_hint = request_body.get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_owned();
+        let msg = profile.reply_message.as_deref().unwrap_or(DEFAULT_REPLY_MESSAGE);
+        let mut entry = TrafficEntry::new("reply".into(), "none".into(), 0, false)
+            .with_profile(profile_name)
+            .with_requested_model(&model_hint)
+            .with_routing_mode("reply");
+        if let Some(id) = request_id {
+            entry = entry.with_id(id);
+        }
+        entry = entry.with_priority(priority);
+        state.traffic.push(entry.clone());
+        return Ok((build_reply_response(msg), entry));
+    }
+
     let (mut target_tier, model_hint) =
         resolve_target_tier(&config, profile, &request_body, expert_gate)?;
 
@@ -334,10 +353,7 @@ pub async fn route(
         RoutingMode::Classify => {
             classify_and_dispatch(state, &mut request_body, profile_name, priority, stream).await?
         }
-        RoutingMode::Reply => {
-            let msg = profile.reply_message.as_deref().unwrap_or(DEFAULT_REPLY_MESSAGE);
-            (build_reply_response(msg), TrafficEntry::new("reply".into(), "none".into(), 0, false))
-        }
+        RoutingMode::Reply => unreachable!("reply mode handled above"),
     };
 
     // Enrich entry with request-level context only available at route() scope,
@@ -385,6 +401,26 @@ pub async fn route_stream(
         .profile(profile_name)
         .context("no matching profile and no default profile configured")?;
 
+    // Reply mode: return a synthetic SSE stream without resolving tiers or calling backends.
+    if profile.mode == RoutingMode::Reply {
+        let model_hint = request_body.get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_owned();
+        let msg = profile.reply_message.as_deref().unwrap_or(DEFAULT_REPLY_MESSAGE);
+        let stream = build_reply_sse_stream(msg);
+        let mut entry = TrafficEntry::new("reply".into(), "none".into(), 0, true)
+            .with_profile(profile_name)
+            .with_requested_model(&model_hint)
+            .with_routing_mode("reply");
+        if let Some(id) = request_id {
+            entry = entry.with_id(id);
+        }
+        entry = entry.with_priority(priority);
+        state.traffic.push(entry.clone());
+        return Ok((stream, entry, false));
+    }
+
     let (mut resolved_tier, model_hint) =
         resolve_target_tier(&config, profile, &request_body, expert_gate)?;
 
@@ -408,22 +444,6 @@ pub async fn route_stream(
     // Inject the profile system prompt before dispatching to any backend.
     if let Some(prompt) = profile.system_prompt.as_deref() {
         inject_system_prompt(&mut request_body, prompt);
-    }
-
-    // Reply mode: return a synthetic SSE stream without calling any backend.
-    if profile.mode == RoutingMode::Reply {
-        let msg = profile.reply_message.as_deref().unwrap_or(DEFAULT_REPLY_MESSAGE);
-        let stream = build_reply_sse_stream(msg);
-        let mut entry = TrafficEntry::new("reply".into(), "none".into(), 0, true)
-            .with_profile(profile_name)
-            .with_requested_model(&model_hint)
-            .with_routing_mode("reply");
-        if let Some(id) = request_id {
-            entry = entry.with_id(id);
-        }
-        entry = entry.with_priority(priority);
-        state.traffic.push(entry.clone());
-        return Ok((stream, entry, false));
     }
 
     // In classify mode, run a non-streaming pre-flight call through classify_and_resolve,

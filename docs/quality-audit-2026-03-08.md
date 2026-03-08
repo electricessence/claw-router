@@ -36,7 +36,7 @@ These violate the project's stated rule: "Do not let Claw-specific framing creep
 
 | # | Severity | Location | Issue |
 |---|----------|----------|-------|
-| N-1 | **Medium** | `src/api/client/openai.rs:36`, `src/api/client/ollama.rs:94`, `src/router/modes.rs:308,350` | **`X-Claw-Expert` header** — still uses old branding. Every other custom header uses `X-LMG-*` prefix (`X-LMG-Priority`, `X-LMG-Tier`, `X-LMG-Profile`, `X-LMG-Class`). This should be `X-LMG-Expert`. The header name is part of the public API surface and appears in external-facing error messages like `"tier … requires the 'X-Claw-Expert: true' header"`. |
+| N-1 | **Medium** | `src/api/client/openai.rs:36`, `src/api/client/ollama.rs:94`, `src/router/modes.rs:308,350` | **`X-LMG-Expert` header** — ✅ Fixed. Renamed from `X-Claw-Expert` to match the `X-LMG-*` prefix used by all other custom headers. |
 
 ---
 
