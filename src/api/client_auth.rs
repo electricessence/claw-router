@@ -114,6 +114,7 @@ mod tests {
                     health_window: None,
                     health_error_threshold: None,
                     public_profile: None,
+                    request_timeout_ms: None,
                 },
                 backends: HashMap::new(),
                 tiers: vec![],
