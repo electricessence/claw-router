@@ -3,7 +3,7 @@ name = "lm-gateway-rs"
 version = "0.3.0"
 edition = "2021"
 description = "Minimal LLM routing gateway — single binary, no Python, works anywhere"
-license = "MIT"
+license = "AGPL-3.0-only"
 repository = "https://github.com/electricessence/lm-gateway-rs"
 readme = "README.md"
 
