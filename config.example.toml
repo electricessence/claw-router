@@ -92,17 +92,24 @@ api_key_env = "OPENROUTER_KEY"  # resolved from environment at startup
 
 # ---------------------------------------------------------------------------
 # Tiers — ordered cheapest → most capable
+#
+# Optional: set `max_context_tokens` on each tier to enable context-window
+# gating.  When a request's estimated token count exceeds a tier's window,
+# the router automatically bumps the request to the next tier that can fit it.
+# Leave unset to disable gating for that tier (assumed unlimited).
 # ---------------------------------------------------------------------------
 
 [[tiers]]
 name    = "local:fast"
 backend = "ollama"
 model   = "qwen2.5:1.5b"
+# max_context_tokens = 8192   # context window of this model (tokens)
 
 [[tiers]]
 name    = "local:deep"
 backend = "ollama"
 model   = "qwen2.5:7b"
+# max_context_tokens = 32768
 
 [[tiers]]
 name    = "cloud:fast"

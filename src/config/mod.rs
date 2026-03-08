@@ -414,6 +414,7 @@ mod tests {
             backend: "nonexistent".into(),
             model: "x".into(),
             think: None,
+            max_context_tokens: None,
         });
         assert!(config.validate().is_err());
     }

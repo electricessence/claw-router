@@ -69,17 +69,23 @@ pub(super) fn classify_and_resolve<'a>(
             .with_context(|| format!("backend `{}` not in config", classifier_tier.backend))?
             .clone();
 
-        // Extract the last user message to classify.
-        let user_text = body
-            .pointer("/messages")
-            .and_then(Value::as_array)
+        // Extract the last user message to classify, plus conversation depth metadata.
+        let messages = body.pointer("/messages").and_then(Value::as_array);
+        let message_count = messages.map_or(0, |arr| arr.len());
+        let user_text = messages
             .and_then(|arr| {
                 arr.iter()
                     .rev()
                     .find(|m| m.get("role").and_then(Value::as_str) == Some("user"))
             })
             .and_then(|m| m.get("content").and_then(Value::as_str))
-            .map(|s| s.to_owned());
+            .map(|s| {
+                if message_count > 1 {
+                    format!("[{message_count} messages in conversation] {s}")
+                } else {
+                    s.to_owned()
+                }
+            });
 
         let Some(user_text) = user_text else {
             debug!(profile = %profile_name, "no user message — bypassing classification");
@@ -216,6 +222,22 @@ pub(super) fn classify_and_resolve<'a>(
         if has_tool_result && std::ptr::eq(target_tier, &candidates[0]) && candidates.len() > 1 {
             debug!("tool-result — bumping from cheapest tier to next");
             target_tier = &candidates[1];
+        }
+
+        // Context-window gating: if the resolved tier's model can't fit the
+        // estimated token count, bump up to the next tier that can.
+        let estimated_tokens = super::estimate_request_tokens(body);
+        let target_idx = candidates.iter().position(|t| t.name == target_tier.name).unwrap_or(0);
+        let min_idx = super::find_min_tier_for_tokens(candidates, estimated_tokens, target_idx);
+        if min_idx > target_idx {
+            debug!(
+                profile = %profile_name,
+                estimated_tokens,
+                from = %target_tier.name,
+                to = %candidates[min_idx].name,
+                "context-window floor — bumping tier"
+            );
+            target_tier = &candidates[min_idx];
         }
 
         debug!(
@@ -455,6 +477,10 @@ pub(super) async fn escalate(
 
     let candidates: Vec<&TierConfig> = config.tiers[..=max_idx].iter().collect();
 
+    // Context-window pre-check: find the lowest tier that can fit the request.
+    let estimated_tokens = super::estimate_request_tokens(body);
+    let token_floor_idx = super::find_min_tier_for_tokens(&config.tiers[..=max_idx], estimated_tokens, 0);
+
     // Pre-fetch backend health snapshot so degraded backends can be skipped.
     let health_window = config.gateway.health_window.unwrap_or(10);
     let health_threshold = config.gateway.health_error_threshold.unwrap_or(0.7);
@@ -465,6 +491,16 @@ pub(super) async fn escalate(
     };
 
     for (tier_idx, tier) in candidates.iter().enumerate() {
+        // Skip tiers below the context-window floor.
+        if tier_idx < token_floor_idx {
+            debug!(
+                tier = %tier.name,
+                estimated_tokens,
+                "skipping tier — request exceeds context window"
+            );
+            continue;
+        }
+
         // Skip tiers whose backends are currently degraded (too many recent errors).
         if health_window > 0 {
             if let Some(health) = backend_health.get(&tier.backend) {
