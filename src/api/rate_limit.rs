@@ -51,7 +51,7 @@ pub struct RateLimiter {
 impl RateLimiter {
     /// Create a new rate limiter for the given requests-per-minute limit.
     pub fn new(rpm: u32) -> Self {
-        let capacity = ((rpm + 1) / 2) as f64; // ceil(rpm / 2)
+        let capacity = rpm.div_ceil(2) as f64;
         let fill_rate = rpm as f64 / 60.0;
         Self {
             rpm,

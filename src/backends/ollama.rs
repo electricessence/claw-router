@@ -193,8 +193,8 @@ impl OllamaAdapter {
             "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}]
         });
         let parts: Vec<bytes::Bytes> = vec![
-            bytes::Bytes::from(format!("data: {}\n\n", chunk1)),
-            bytes::Bytes::from(format!("data: {}\n\n", chunk2)),
+            bytes::Bytes::from(format!("data: {chunk1}\n\n")),
+            bytes::Bytes::from(format!("data: {chunk2}\n\n")),
             bytes::Bytes::from_static(b"data: [DONE]\n\n"),
         ];
         Ok(Box::pin(futures_util::stream::iter(

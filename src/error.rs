@@ -86,8 +86,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(
             json["error"].as_str().unwrap().contains("file missing"),
-            "error text not propagated: {:?}",
-            json
+            "error text not propagated: {json:?}"
         );
     }
 
