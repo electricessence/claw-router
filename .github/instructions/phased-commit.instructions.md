@@ -24,4 +24,11 @@ Any hit: remove it and restart from 1 before committing.
 
 **5 Push - EXPLICIT APPROVAL REQUIRED** --- always get approval before `git push`; report commit + concerns and wait for confirmation.
 
-**6 PR Quality Loop** --- if this push resolves comments on an open PR, immediately request a fresh Copilot review. A new review catches anything the first pass missed or any regressions introduced by the fix. Do not skip this step.
+**6 PR Quality Loop — MANDATORY** --- after every push to a PR branch:
+
+1. **Trigger Copilot review** — request a fresh review immediately after pushing.
+2. **Wait for comments** — Copilot typically responds within 5 minutes.
+3. **Address every comment** — fix the issue or explain briefly (human-style, not long-winded) why no change is needed. Resolve each thread.
+4. **Re-trigger Copilot review** — after addressing all comments, request another review.
+5. **Repeat** until Copilot returns zero new comments.
+6. **Only then merge** — a clean Copilot review with no new comments is the merge gate.
