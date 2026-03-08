@@ -402,7 +402,7 @@ classifier_prompt = "..."
 profile_dir = "/opt/lm-gateway/profiles"
 ```
 
-When neither `profile_dir` nor a `profiles/` directory exists, this feature is silently skipped.
+If `profile_dir` is set, that path is used; otherwise `./profiles` is used. If the selected path does not exist or is not a directory, loading profiles from disk is silently skipped (inline and `conf.d/` profiles still apply).
 
 ---
 

@@ -104,7 +104,7 @@ pub struct GatewayConfig {
 
     /// Directory containing per-profile TOML files.
     ///
-    /// Each `*.toml` file in this directory is loaded as a [`ProfileConfig`]
+    /// Each `*.toml` file in this directory is loaded as a `ProfileConfig`
     /// whose name is the file stem (e.g. `ha-auto.toml` → profile `ha-auto`).
     /// Directory profiles are merged **after** inline `[profiles.*]` sections
     /// and `conf.d/` overlays, so they take precedence on name collision.

@@ -1,4 +1,4 @@
-# "claw-agent" — profile for AI agents (100% local processing)
+# "agent" — profile for AI agents (100% local processing)
 #
 # Agents generate tool calls, code, SSH commands, config edits, and multi-step
 # plans. The classifier routes by cognitive load:

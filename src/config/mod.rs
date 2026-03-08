@@ -322,6 +322,13 @@ impl Config {
                 let file: ProfileFile = toml::from_str(&content)
                     .with_context(|| format!("parsing profile {}", entry.display()))?;
                 let name = file.name.unwrap_or(fallback_name);
+                if config.profiles.contains_key(&name) {
+                    tracing::warn!(
+                        name = %name,
+                        file = %entry.display(),
+                        "profile directory entry overwrites existing profile"
+                    );
+                }
                 config.profiles.insert(name, file.config);
             }
             if !entries.is_empty() {
