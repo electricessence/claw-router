@@ -106,8 +106,7 @@ pub(crate) fn estimate_request_tokens(body: &Value) -> u32 {
     }
 
     // 10% safety margin — round up to ensure pessimistic upper bound
-    let with_margin = (token_count as f64 * 1.1).ceil() as u32;
-    with_margin
+    (token_count as f64 * 1.1).ceil() as u32
 }
 
 /// Find the lowest tier whose `max_context_tokens` can fit the estimated token count.
@@ -122,8 +121,8 @@ pub(crate) fn find_min_tier_for_tokens(
     estimated_tokens: u32,
     start_idx: usize,
 ) -> usize {
-    for i in start_idx..candidates.len() {
-        match candidates[i].max_context_tokens {
+    for (i, candidate) in candidates.iter().enumerate().skip(start_idx) {
+        match candidate.max_context_tokens {
             Some(max) if estimated_tokens > max => continue, // won't fit
             _ => return i, // fits or uncapped
         }
@@ -1219,7 +1218,7 @@ mod tests {
         // "You are a helpful assistant." ≈ 6 tokens, "Hello world" ≈ 2 tokens,
         // roles ≈ 2 tokens, 2×4 message overhead + 2 priming = 10 overhead
         // Total ≈ 20, with margin ≈ 22. We just check plausible range.
-        assert!(tokens >= 15 && tokens <= 35, "expected 15-35, got {tokens}");
+        assert!((15..=35).contains(&tokens), "expected 15-35, got {tokens}");
     }
 
     #[test]

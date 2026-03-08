@@ -300,9 +300,7 @@ impl Config {
         for (alias, tier) in &self.aliases {
             anyhow::ensure!(
                 tier_names.contains(tier.as_str()),
-                "alias `{}` maps to unknown tier `{}`",
-                alias,
-                tier
+                "alias `{alias}` maps to unknown tier `{tier}`"
             );
         }
 

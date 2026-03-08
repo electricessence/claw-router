@@ -64,7 +64,7 @@ impl GateState {
             .iter()
             .copied()
             .max()
-            .map_or(true, |max| priority > max)
+            .is_none_or(|max| priority > max)
     }
 
     /// Try to unblock the next eligible pending entry.

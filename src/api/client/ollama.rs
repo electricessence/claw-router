@@ -307,8 +307,8 @@ fn sse_to_ollama_ndjson(
                             // Assemble accumulated tool_calls (BTreeMap keeps index order).
                             let assembled: Vec<serde_json::Value> = st
                                 .tool_calls
-                                .iter()
-                                .map(|(_, b)| {
+                                .values()
+                                .map(|b| {
                                     // Ollama native format requires arguments as a dict,
                                     // not the JSON string that OpenAI SSE carries.
                                     let args: serde_json::Value =

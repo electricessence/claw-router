@@ -240,7 +240,6 @@ pub(super) mod defaults {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::config::Config;
 
     #[test]
