@@ -102,6 +102,16 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub health_error_threshold: Option<f64>,
 
+    /// When `true` and the `debug-traffic` Cargo feature is enabled, the
+    /// traffic log captures the full request body (messages, tools, system
+    /// prompt) for each entry.
+    ///
+    /// **Security warning:** request bodies may contain sensitive content.
+    /// Enable only for local debugging; disable in production.
+    #[cfg(feature = "debug-traffic")]
+    #[serde(default)]
+    pub traffic_log_debug: bool,
+
     /// Directory containing per-profile TOML files.
     ///
     /// Each `*.toml` file in this directory is loaded as a `ProfileConfig`

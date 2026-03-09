@@ -59,6 +59,9 @@ native-tls = ["reqwest/native-tls"]
 # Used by the production Docker build:
 #   cargo build --no-default-features --features rustls-tls
 rustls-tls = ["reqwest/rustls-tls"]
+# Store full request bodies in traffic log entries for debugging.
+# Requires `traffic_log_debug = true` in [gateway] config at runtime.
+debug-traffic = []
 
 [profile.release]
 opt-level = 3

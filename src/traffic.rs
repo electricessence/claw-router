@@ -8,6 +8,8 @@ use std::collections::VecDeque;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "debug-traffic")]
+use serde_json::Value;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -178,6 +180,14 @@ pub struct TrafficEntry {
     /// `0` = normal (default), `+N` = higher, `-N` = background.
     #[serde(default)]
     pub priority: i32,
+    /// Full request body captured for debugging.
+    ///
+    /// Only populated when the `debug-traffic` Cargo feature is compiled in
+    /// **and** `traffic_log_debug = true` in the `[gateway]` config.
+    /// Contains messages, tools, and system prompt as dispatched to the backend.
+    #[cfg(feature = "debug-traffic")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug_messages: Option<Value>,
 }
 
 impl TrafficEntry {
@@ -197,6 +207,8 @@ impl TrafficEntry {
             class_label: None,
             profile_chain: None,
             priority: 0,
+            #[cfg(feature = "debug-traffic")]
+            debug_messages: None,
         }
     }
 
@@ -243,6 +255,15 @@ impl TrafficEntry {
     /// Attach the scheduling priority from `X-LMG-Priority`.
     pub fn with_priority(mut self, priority: i32) -> Self {
         self.priority = priority;
+        self
+    }
+
+    /// Attach the full request body for debugging.
+    ///
+    /// Only available when compiled with `--features debug-traffic`.
+    #[cfg(feature = "debug-traffic")]
+    pub fn with_debug_messages(mut self, body: Value) -> Self {
+        self.debug_messages = Some(body);
         self
     }
 

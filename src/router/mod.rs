@@ -206,6 +206,11 @@ pub struct RouterState {
     /// via hot-reload will not have a gate and will fire immediately (safe fallback).
     /// Not updated on hot-reload — restart required to gate newly added tiers.
     pub gates: HashMap<String, TierPriorityGate>,
+
+    /// When `true`, attach full request bodies to traffic log entries.
+    /// Requires the `debug-traffic` Cargo feature.
+    #[cfg(feature = "debug-traffic")]
+    pub debug_traffic: bool,
 }
 
 impl RouterState {
@@ -253,6 +258,8 @@ impl RouterState {
             .map(|t| (t.name.clone(), TierPriorityGate::new()))
             .collect();
         tracing::debug!(count = gates.len(), "priority gates initialised");
+        #[cfg(feature = "debug-traffic")]
+        let debug_traffic = config.gateway.traffic_log_debug;
         Self {
             config_lock: Arc::new(RwLock::new(config)),
             config_path,
@@ -264,6 +271,8 @@ impl RouterState {
             public_profile,
             profile_limiters,
             gates,
+            #[cfg(feature = "debug-traffic")]
+            debug_traffic,
         }
     }
 
@@ -330,6 +339,10 @@ pub async fn route(
             entry = entry.with_id(id);
         }
         entry = entry.with_priority(priority);
+        #[cfg(feature = "debug-traffic")]
+        if state.debug_traffic {
+            entry = entry.with_debug_messages(request_body);
+        }
         state.traffic.push(entry.clone());
         return Ok((build_reply_response(msg), entry));
     }
@@ -390,6 +403,10 @@ pub async fn route(
         entry = entry.with_id(id);
     }
     entry = entry.with_priority(priority);
+    #[cfg(feature = "debug-traffic")]
+    if state.debug_traffic {
+        entry = entry.with_debug_messages(request_body);
+    }
 
     state.traffic.push(entry.clone());
 
@@ -436,6 +453,10 @@ pub async fn route_stream(
             entry = entry.with_id(id);
         }
         entry = entry.with_priority(priority);
+        #[cfg(feature = "debug-traffic")]
+        if state.debug_traffic {
+            entry = entry.with_debug_messages(request_body);
+        }
         state.traffic.push(entry.clone());
         return Ok((stream, entry, false));
     }
@@ -520,6 +541,10 @@ pub async fn route_stream(
 
     debug!(tier = %target_tier.name, backend = %target_tier.backend, "streaming dispatch");
 
+    // Snapshot the request body before the client call consumes it.
+    #[cfg(feature = "debug-traffic")]
+    let debug_body = if state.debug_traffic { Some(request_body.clone()) } else { None };
+
     let client = BackendClient::new(backend_cfg)?;
     let t0 = std::time::Instant::now();
 
@@ -564,6 +589,10 @@ pub async fn route_stream(
         entry = entry.with_routing_trace(class_label, profile_chain);
     }
     entry = entry.with_priority(priority);
+    #[cfg(feature = "debug-traffic")]
+    if let Some(body) = debug_body {
+        entry = entry.with_debug_messages(body);
+    }
 
     state.traffic.push(entry.clone());
 
