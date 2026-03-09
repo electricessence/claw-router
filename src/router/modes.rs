@@ -69,25 +69,57 @@ pub(super) fn classify_and_resolve<'a>(
             .with_context(|| format!("backend `{}` not in config", classifier_tier.backend))?
             .clone();
 
-        // Extract the last user message to classify, plus conversation depth metadata.
+        // Build classifier input from the conversation history.
+        //
+        // By default the classifier sees all user + assistant messages (system and
+        // tool messages are stripped — they carry instructions and function outputs
+        // that don't help classification). If the profile sets `classifier_context`,
+        // only the last N such messages are included.
         let messages = body.pointer("/messages").and_then(Value::as_array);
         let message_count = messages.map_or(0, |arr| arr.len());
-        let user_text = messages
-            .and_then(|arr| {
-                arr.iter()
-                    .rev()
-                    .find(|m| m.get("role").and_then(Value::as_str) == Some("user"))
-            })
-            .and_then(|m| m.get("content").and_then(Value::as_str))
-            .map(|s| {
-                if message_count > 1 {
-                    format!("[{message_count} messages in conversation] {s}")
-                } else {
-                    s.to_owned()
-                }
-            });
 
-        let Some(user_text) = user_text else {
+        let classifier_input = messages.and_then(|arr| {
+            // Filter to user + assistant messages with text content.
+            let relevant: Vec<(&str, &str)> = arr
+                .iter()
+                .filter_map(|m| {
+                    let role = m.get("role").and_then(Value::as_str)?;
+                    if role != "user" && role != "assistant" {
+                        return None;
+                    }
+                    let content = m.get("content").and_then(Value::as_str)?;
+                    Some((role, content))
+                })
+                .collect();
+
+            if relevant.is_empty() {
+                return None;
+            }
+
+            // Apply classifier_context limit (take last N messages).
+            let window: &[(&str, &str)] = match profile.classifier_context {
+                Some(n) if n < relevant.len() => &relevant[relevant.len() - n..],
+                _ => &relevant,
+            };
+
+            // Single message (common case): return it as-is.
+            if window.len() == 1 {
+                return Some(window[0].1.to_owned());
+            }
+
+            // Multi-message: format as a labelled conversation block.
+            let mut buf = format!("[{message_count} messages in conversation]\n");
+            for (role, content) in window {
+                let label = if *role == "user" { "User" } else { "Assistant" };
+                buf.push_str(label);
+                buf.push_str(": ");
+                buf.push_str(content);
+                buf.push('\n');
+            }
+            Some(buf)
+        });
+
+        let Some(classifier_input) = classifier_input else {
             debug!(profile = %profile_name, "no user message — bypassing classification");
             return Ok(RoutingResolution {
                 tier_name: classifier_tier.name.clone(),
@@ -96,6 +128,13 @@ pub(super) fn classify_and_resolve<'a>(
                 profile_chain: visited,
             });
         };
+
+        debug!(
+            profile = %profile_name,
+            message_count,
+            classifier_input_len = classifier_input.len(),
+            "classifier input built"
+        );
 
         let system_prompt = profile
             .classifier_prompt
@@ -114,7 +153,7 @@ pub(super) fn classify_and_resolve<'a>(
             "model": classifier_tier.model,
             "messages": [
                 { "role": "system", "content": system_prompt },
-                { "role": "user",   "content": &user_text   }
+                { "role": "user",   "content": &classifier_input }
             ],
             "stream": false,
             "think": classifier_think,

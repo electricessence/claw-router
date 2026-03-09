@@ -252,6 +252,33 @@ Reply with exactly one word: greeting, chitchat, inquiry, conversation, or compl
 
 ---
 
+## Classifier Context Window
+
+By default the classifier sees the **entire** user+assistant conversation history (system and tool messages are stripped). This gives the classifier full context for multi-turn conversations where later messages depend on earlier ones.
+
+To limit how far back the classifier looks, set `classifier_context` to a positive integer:
+
+```toml
+[profiles.ha-voice]
+mode               = "classify"
+classifier         = "local:instant"
+classifier_context = 4  # only last 4 user/assistant messages
+```
+
+When omitted (the default), all user and assistant messages are included. For single-message requests, the message is sent to the classifier as-is with no formatting overhead.
+
+For multi-message conversations, the classifier input is formatted as:
+
+```
+[12 messages in conversation]
+User: Earlier question...
+Assistant: Earlier response...
+User: Follow-up question...
+Assistant: Follow-up response...
+```
+
+---
+
 ## Rules Engine — Semantic Tag Routing
 
 When using `classify` mode, the classifier can emit structured tags alongside a tier label. Rules let you route based on those tags — bypassing the tier ladder entirely.

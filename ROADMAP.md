@@ -516,7 +516,45 @@ Explore options for accessing more capable models within the 17.6 GiB Vulkan VRA
 - **External backends**: route deep-tier to a cloud provider (Anthropic, OpenRouter) for tasks that genuinely need 70b+ capability; the gateway already supports this via backend config
 - **Hardware upgrade**: a dedicated GPU card in the Proxmox host would provide a separate VRAM pool; even a used 16 GB card would double available capacity
 
-### Classifier auto-tuning routine
+### Acknowledgement class for agent/HA profiles
+
+Distinct from `greeting` (social opener), an `ack` message is a conversational *closer* — "Got it", "Thanks", "Will do", "Okay" — that signals the user is done and doesn't need a substantive response. Without an explicit `ack` label, the classifier sees a short message inside a long technical conversation and upgrades it to `moderate` because the context demands it. This produces a full deployment guide in response to "Got it, I'll set all that up." — semantically correct from context, but practically wrong for UX.
+
+**Intent:** ack messages should always route to `instant`, regardless of conversation depth.
+
+**Approach:** add an `ack` label to the agent and HA classifiers alongside `greeting`. The `ack` class_prompt: *"The user is closing the loop. Confirm briefly in one sentence or less."*
+
+---
+
+### HA response quality — complete state answers
+
+For HA inquiry responses, the ideal answer includes *complete* entity state, not just the binary answer to the question:
+
+> *"Is the back door open?"* → ideal: **"No, the back door is closed and locked."**
+
+Why: the door's lock state is directly relevant even if not asked. A door can be closed but unlocked — knowing both states in one response is better UX.
+
+This requires:
+1. HA passing *both* the contact sensor and the lock entity to the model in its context list
+2. The `inquiry` class_prompt directing the model to volunteer complete state: *"Answer the question asked. If there is related state (e.g. lock status for a door query), include it in the same sentence."*
+
+Note: "Is the back door open?" (answer: No) and "Is the back door closed?" (answer: Yes) are negations of the same question — the model must interpret intent, not just match words.
+
+---
+
+### Multi-layer HA domain routing (future)
+
+Currently ha-auto classifies into 6 semantic labels. A future multi-layer routing approach could add a domain pre-classifier:
+
+- **Layer 1**: Is this about a *thing* (door, light, thermostat, sensor) or a *concept* (greeting, chitchat, status summary)?
+- **Layer 2**: For *thing*-type queries, which entity domain? (door, light, climate, security, ...)
+- **Layer 3**: Is the user *commanding* it, *querying* it, or *discussing* it?
+
+Each layer is a tiny classification call (1.7b, no-think, <1s). The final routing decision combines all three layers with much higher accuracy than a single flat 6-label classifier. This is the direction for a "really good" HA profile once the basics are tuned.
+
+---
+
+
 
 An automated calibration procedure that tunes classifier prompts and tier boundaries to the
 operator's specific model inventory. When an operator installs lm-gateway-rs and configures

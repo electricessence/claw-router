@@ -164,6 +164,19 @@ pub struct ProfileConfig {
     #[serde(default)]
     pub class_prompts: HashMap<String, String>,
 
+    /// How many recent user+assistant messages to include in the classifier input.
+    ///
+    /// By default the classifier sees the full conversation history (all user and
+    /// assistant messages, excluding system and tool messages). Set this to a
+    /// positive integer to cap how far back the classifier looks — e.g. `4` sends
+    /// only the last 4 user/assistant messages.
+    ///
+    /// Useful for profiles where classification speed matters more than deep
+    /// context awareness (e.g. Home Assistant voice, where each utterance is
+    /// mostly self-contained).
+    #[serde(default)]
+    pub classifier_context: Option<usize>,
+
     /// Static response text returned by `reply` mode without calling any backend.
     ///
     /// Defaults to a generic "not configured" message when absent.
