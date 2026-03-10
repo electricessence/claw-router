@@ -4,7 +4,7 @@
 
 ---
 
-## ⚠️ No Secrets / No PII
+## ⚠️ No Secrets / No PII — Absolute Rule
 
 **NEVER commit:**
 - API keys, tokens, passwords, or any credentials
@@ -13,6 +13,21 @@
 - SSH key paths or machine-specific paths
 
 Use environment variables. Reference env var **names**, never **values**.
+
+---
+
+## ⚠️ No Infrastructure-Specific Tooling — Absolute Rule
+
+**NEVER add to this repo:**
+- Deploy scripts (`Push-ToLxc.ps1`, `Sync-*.ps1`, etc.)
+- SSH wrappers or LXC management scripts
+- Operational test runners that target a specific server
+- `.env.ps1` / `.env.example.ps1` files with host aliases or container IDs
+- Any file that assumes a particular server, LXC setup, or SSH topology
+
+**Why:** This is a public, general-purpose project. Infrastructure-specific tooling leaks deployment context and does not belong here. It belongs in the private `claw-agents` repo under `tools/`.
+
+If you find yourself writing a script that contains `$SshAlias`, `$LxcId`, or any host-specific default — stop and put it in `claw-agents/tools/` instead.
 
 ---
 
