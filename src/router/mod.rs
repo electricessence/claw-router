@@ -567,6 +567,10 @@ pub async fn route_stream(
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
+                // Known limitation: the synthetic prefix chunk carries a different `id`
+                // than the backend stream chunks that follow. The OpenAI spec requires all
+                // chunks in a completion to share the same `id`; most clients tolerate the
+                // mismatch, but strict implementations may treat them as separate completions.
                 let chunk = serde_json::json!({
                     "id": format!("chatcmpl-thinking-{ts}"),
                     "object": "chat.completion.chunk",
