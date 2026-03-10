@@ -20,6 +20,84 @@ use super::{
     classify::{parse_classification, ParsedClassification, resolve_tier_by_label},
 };
 
+/// Build the classifier input string from a profile and message array.
+///
+/// Returns `None` when classification should be skipped entirely:
+/// - `classifier_context = 0` — profile explicitly disables classification;
+///   the caller routes starting at the classifier tier with context-window gating.
+/// - No user or assistant messages are present.
+/// - The filtered window contains only assistant messages (no user turn to classify).
+pub(super) fn build_classifier_input(profile: &ProfileConfig, messages: &[Value]) -> Option<String> {
+    // `Some(0)` disables the pre-flight classifier context: skip building a
+    // history window and let the caller route starting at the classifier tier,
+    // still applying context-window gating across candidate tiers.
+    if profile.classifier_context == Some(0) {
+        return None;
+    }
+
+    // Build the window: filter user/assistant text messages, optionally capped
+    // to the last N. Walk from the end when bounded to avoid scanning the full
+    // history for small contexts (e.g. 1–4 messages).
+    let window: Vec<(&str, String)> = match profile.classifier_context {
+        Some(n) => {
+            let n = n as usize;
+            let mut w: Vec<(&str, String)> = messages
+                .iter()
+                .rev()
+                .filter_map(|m| {
+                    let role = m.get("role").and_then(Value::as_str)?;
+                    if role != "user" && role != "assistant" {
+                        return None;
+                    }
+                    let content = super::extract_message_text(m)?;
+                    Some((role, content))
+                })
+                .take(n)
+                .collect();
+            w.reverse();
+            w
+        }
+        None => messages
+            .iter()
+            .filter_map(|m| {
+                let role = m.get("role").and_then(Value::as_str)?;
+                if role != "user" && role != "assistant" {
+                    return None;
+                }
+                let content = super::extract_message_text(m)?;
+                Some((role, content))
+            })
+            .collect(),
+    };
+
+    if window.is_empty() {
+        return None;
+    }
+
+    // Require at least one user message — assistant-only context isn't
+    // meaningful for classification.
+    if !window.iter().any(|(role, _)| *role == "user") {
+        return None;
+    }
+
+    // Single message (common case): return it as-is without header formatting.
+    if window.len() == 1 {
+        return Some(window.into_iter().next().unwrap().1);
+    }
+
+    // Multi-message: format as a labelled conversation block.
+    // Use window.len() so the count reflects filtered messages actually sent.
+    let mut buf = format!("[{} messages in conversation]\n", window.len());
+    for (role, content) in &window {
+        let label = if *role == "user" { "User" } else { "Assistant" };
+        buf.push_str(label);
+        buf.push_str(": ");
+        buf.push_str(content);
+        buf.push('\n');
+    }
+    Some(buf)
+}
+
 /// Outcome of a classify-mode routing pass.
 ///
 /// Carries the resolved tier name, optional `think` override to inject before
@@ -69,39 +147,16 @@ pub(super) fn classify_and_resolve<'a>(
             .with_context(|| format!("backend `{}` not in config", classifier_tier.backend))?
             .clone();
 
-        // Extract the last user message to classify, plus conversation depth metadata.
+        // Build classifier input from the conversation history.
+        //
+        // By default the classifier sees all user + assistant messages (system and
+        // tool messages are stripped — they carry instructions and function outputs
+        // that don't help classification). If the profile sets `classifier_context`,
+        // only the last N such messages are included.
         let messages = body.pointer("/messages").and_then(Value::as_array);
         let message_count = messages.map_or(0, |arr| arr.len());
-        let user_text = messages
-            .and_then(|arr| {
-                arr.iter()
-                    .rev()
-                    .find(|m| m.get("role").and_then(Value::as_str) == Some("user"))
-            })
-            .and_then(|m| m.get("content").and_then(Value::as_str))
-            .map(|s| {
-                if message_count > 1 {
-                    format!("[{message_count} messages in conversation] {s}")
-                } else {
-                    s.to_owned()
-                }
-            });
 
-        let Some(user_text) = user_text else {
-            debug!(profile = %profile_name, "no user message — bypassing classification");
-            return Ok(RoutingResolution {
-                tier_name: classifier_tier.name.clone(),
-                think_override: None,
-                class_label: String::new(), // no classification performed — skip class_prompts
-                profile_chain: visited,
-            });
-        };
-
-        let system_prompt = profile
-            .classifier_prompt
-            .as_deref()
-            .unwrap_or(DEFAULT_CLASSIFIER_PROMPT);
-
+        // Compute candidates early so the bypass path can apply context-window gating.
         let max_idx = config
             .tiers
             .iter()
@@ -109,12 +164,50 @@ pub(super) fn classify_and_resolve<'a>(
             .unwrap_or(config.tiers.len().saturating_sub(1));
         let candidates: &[TierConfig] = &config.tiers[..=max_idx];
 
+        let classifier_input = messages.and_then(|arr| build_classifier_input(profile, arr));
+
+        let Some(classifier_input) = classifier_input else {
+            // Apply context-window gating even on the bypass path so oversized
+            // requests don't land on a tier that can't fit them.
+            let estimated_tokens = super::estimate_request_tokens(body);
+            let classifier_idx = candidates
+                .iter()
+                .position(|t| t.name == classifier_tier.name)
+                .unwrap_or(0);
+            let min_idx = super::find_min_tier_for_tokens(candidates, estimated_tokens, classifier_idx);
+            let bypass_tier_name = candidates[min_idx].name.clone();
+            debug!(
+                profile = %profile_name,
+                estimated_tokens,
+                tier = %bypass_tier_name,
+                "classifier input unavailable — bypassing classification (context-window gating applied)"
+            );
+            return Ok(RoutingResolution {
+                tier_name: bypass_tier_name,
+                think_override: None,
+                class_label: String::new(), // no classification performed — skip class_prompts
+                profile_chain: visited,
+            });
+        };
+
+        debug!(
+            profile = %profile_name,
+            message_count,
+            classifier_input_len = classifier_input.len(),
+            "classifier input built"
+        );
+
+        let system_prompt = profile
+            .classifier_prompt
+            .as_deref()
+            .unwrap_or(DEFAULT_CLASSIFIER_PROMPT);
+
         let classifier_think = profile.classifier_think.unwrap_or(false);
         let classifier_body = serde_json::json!({
             "model": classifier_tier.model,
             "messages": [
                 { "role": "system", "content": system_prompt },
-                { "role": "user",   "content": &user_text   }
+                { "role": "user",   "content": &classifier_input }
             ],
             "stream": false,
             "think": classifier_think,

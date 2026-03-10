@@ -116,6 +116,14 @@ profile = "ha-auto"
 key_env = "LMG_AGENT_KEY"
 profile = "agent"
 
+[[clients]]
+key_env = "LMG_ESCALATE_TEST_KEY"
+profile = "agent-escalate"
+
+[[clients]]
+key_env = "LMG_FORGE_AUDIT_KEY"
+profile = "code-audit"
+
 # ---------------------------------------------------------------------------
 # Profiles — loaded from etc/lm-gateway/profiles/*.toml
 #
