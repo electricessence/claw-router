@@ -9,6 +9,8 @@ use std::collections::VecDeque;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "debug-traffic")]
+use std::sync::Arc;
+#[cfg(feature = "debug-traffic")]
 use serde_json::Value;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -185,9 +187,12 @@ pub struct TrafficEntry {
     /// Only populated when the `debug-traffic` Cargo feature is compiled in
     /// **and** `traffic_log_debug = true` in the `[gateway]` config.
     /// Contains messages, tools, and system prompt as dispatched to the backend.
+    ///
+    /// Stored behind `Arc` so that cloning a [`TrafficEntry`] (e.g. when pushing
+    /// to the ring buffer) shares the allocation rather than duplicating the body.
     #[cfg(feature = "debug-traffic")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub debug_request_body: Option<Value>,
+    pub debug_request_body: Option<Arc<Value>>,
 }
 
 impl TrafficEntry {
@@ -261,9 +266,11 @@ impl TrafficEntry {
     /// Attach the full request body for debugging.
     ///
     /// Only available when compiled with `--features debug-traffic`.
+    /// The body is stored behind [`Arc`] so that cloning the entry doesn't
+    /// duplicate the allocation.
     #[cfg(feature = "debug-traffic")]
     pub fn with_debug_messages(mut self, body: &Value) -> Self {
-        self.debug_request_body = Some(body.clone());
+        self.debug_request_body = Some(Arc::new(body.clone()));
         self
     }
 
@@ -463,7 +470,7 @@ mod tests {
         let entry = TrafficEntry::new("local:fast".into(), "mock".into(), 10, true)
             .with_debug_messages(&body);
         assert_eq!(
-            entry.debug_request_body.as_ref(),
+            entry.debug_request_body.as_deref(),
             Some(&body),
             "debug_request_body must equal the body passed to with_debug_messages"
         );
