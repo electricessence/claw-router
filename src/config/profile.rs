@@ -175,8 +175,9 @@ pub struct ProfileConfig {
     /// When a streaming request routes to a tier listed here, one message is
     /// randomly selected and injected as a synthetic chunk before the
     /// backend's first real token. Intended for streaming chat UIs where
-    /// early tokens improve perceived responsiveness. Has no effect on
-    /// consumers that buffer the full response before rendering (e.g. HA voice).
+    /// early tokens improve perceived responsiveness. For consumers that
+    /// buffer the full response before rendering (e.g. HA voice), the prefix
+    /// is concatenated into the final spoken text rather than appearing early.
     ///
     /// Only applies to streaming requests. Non-streaming requests are unaffected.
     ///

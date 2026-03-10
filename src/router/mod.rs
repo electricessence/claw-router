@@ -33,7 +33,7 @@ use bytes::Bytes;
 use serde_json::Value;
 use tracing::debug;
 
-use futures_util::StreamExt;
+use futures_util::StreamExt as _;
 
 use crate::{
     api::rate_limit::RateLimiter,
@@ -563,9 +563,14 @@ pub async fn route_stream(
                 });
                 Bytes::from(format!("{chunk}\n"))
             } else {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
                 let chunk = serde_json::json!({
                     "id": "thinking",
                     "object": "chat.completion.chunk",
+                    "created": ts,
                     "model": target_tier.model,
                     "choices": [{
                         "index": 0,
@@ -691,6 +696,32 @@ mod tests {
 
     use self::classify::{parse_classification, parse_classification_label, resolve_tier_by_label};
     use self::modes::is_sufficient;
+
+    // -----------------------------------------------------------------------
+    // pick_thinking_message — pure helper, no I/O
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pick_thinking_message_empty_pool_returns_none() {
+        assert!(pick_thinking_message(&[]).is_none());
+    }
+
+    #[test]
+    fn pick_thinking_message_single_element_always_returns_it() {
+        let pool = vec!["Thinking…".to_owned()];
+        for _ in 0..10 {
+            assert_eq!(pick_thinking_message(&pool), Some("Thinking…"));
+        }
+    }
+
+    #[test]
+    fn pick_thinking_message_multiple_elements_stays_in_bounds() {
+        let pool = vec!["A".to_owned(), "B".to_owned(), "C".to_owned()];
+        for _ in 0..20 {
+            let msg = pick_thinking_message(&pool).expect("should return Some");
+            assert!(pool.contains(&msg.to_owned()), "returned message not in pool: {msg}");
+        }
+    }
 
     // -----------------------------------------------------------------------
     // is_sufficient — pure heuristic, no I/O required
