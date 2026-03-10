@@ -269,8 +269,8 @@ impl TrafficEntry {
     /// The body is stored behind [`Arc`] so that cloning the entry doesn't
     /// duplicate the allocation.
     #[cfg(feature = "debug-traffic")]
-    pub fn with_debug_messages(mut self, body: &Value) -> Self {
-        self.debug_request_body = Some(Arc::new(body.clone()));
+    pub fn with_debug_request_body(mut self, body: Value) -> Self {
+        self.debug_request_body = Some(Arc::new(body));
         self
     }
 
@@ -461,28 +461,28 @@ mod tests {
 
     #[cfg(feature = "debug-traffic")]
     #[test]
-    fn with_debug_messages_populates_debug_request_body() {
+    fn with_debug_request_body_populates_field() {
         use serde_json::json;
         let body = json!({
             "model": "hint:fast",
             "messages": [{"role": "user", "content": "hello"}]
         });
         let entry = TrafficEntry::new("local:fast".into(), "mock".into(), 10, true)
-            .with_debug_messages(&body);
+            .with_debug_request_body(body.clone());
         assert_eq!(
             entry.debug_request_body.as_deref(),
             Some(&body),
-            "debug_request_body must equal the body passed to with_debug_messages"
+            "debug_request_body must equal the body passed to with_debug_request_body"
         );
     }
 
     #[cfg(feature = "debug-traffic")]
     #[test]
-    fn with_debug_messages_clones_independently() {
+    fn with_debug_request_body_clone_is_independent() {
         use serde_json::json;
         let mut body = json!({"model": "hint:fast", "messages": []});
         let entry = TrafficEntry::new("local:fast".into(), "mock".into(), 10, true)
-            .with_debug_messages(&body);
+            .with_debug_request_body(body.clone());
         // Mutate the original — the captured copy must be unaffected.
         body["model"] = json!("mutated");
         assert_eq!(

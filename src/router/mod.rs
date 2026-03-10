@@ -352,7 +352,7 @@ pub async fn route(
         entry = entry.with_priority(priority);
         #[cfg(feature = "debug-traffic")]
         if state.debug_traffic {
-            entry = entry.with_debug_messages(&request_body);
+            entry = entry.with_debug_request_body(request_body.clone());
         }
         state.traffic.push(entry.clone());
         return Ok((build_reply_response(msg), entry));
@@ -416,7 +416,7 @@ pub async fn route(
     entry = entry.with_priority(priority);
     #[cfg(feature = "debug-traffic")]
     if state.debug_traffic {
-        entry = entry.with_debug_messages(&request_body);
+        entry = entry.with_debug_request_body(request_body.clone());
     }
 
     state.traffic.push(entry.clone());
@@ -466,7 +466,7 @@ pub async fn route_stream(
         entry = entry.with_priority(priority);
         #[cfg(feature = "debug-traffic")]
         if state.debug_traffic {
-            entry = entry.with_debug_messages(&request_body);
+            entry = entry.with_debug_request_body(request_body.clone());
         }
         state.traffic.push(entry.clone());
         return Ok((stream, entry, false));
@@ -554,7 +554,7 @@ pub async fn route_stream(
 
     // Snapshot the request body before the client call consumes it.
     #[cfg(feature = "debug-traffic")]
-    let debug_body = if state.debug_traffic { Some(request_body.clone()) } else { None };
+    let debug_body: Option<Value> = if state.debug_traffic { Some(request_body.clone()) } else { None };
 
     let client = BackendClient::new(backend_cfg)?;
     let t0 = std::time::Instant::now();
@@ -601,8 +601,8 @@ pub async fn route_stream(
     }
     entry = entry.with_priority(priority);
     #[cfg(feature = "debug-traffic")]
-    if let Some(body) = &debug_body {
-        entry = entry.with_debug_messages(body);
+    if let Some(body) = debug_body {
+        entry = entry.with_debug_request_body(body);
     }
 
     state.traffic.push(entry.clone());
@@ -1630,10 +1630,12 @@ mod tests {
             entry.debug_request_body.is_some(),
             "debug_request_body must be populated when debug_traffic = true"
         );
-        // The captured body must contain the original model hint
+        // The original hint is preserved in requested_model; the captured body
+        // reflects what was actually sent to the backend (model rewritten by dispatch).
+        assert_eq!(entry.requested_model.as_deref(), Some("hint:fast"));
         assert_eq!(
             entry.debug_request_body.as_ref().and_then(|b| b["model"].as_str()),
-            Some("hint:fast")
+            Some("fast-model")
         );
     }
 

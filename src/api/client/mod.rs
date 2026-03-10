@@ -178,6 +178,7 @@ mod tests {
                 health_error_threshold: None,
                 public_profile: None,
                 request_timeout_ms: None,
+                traffic_log_debug: false,
                 profile_dir: None,
             },
             backends: {

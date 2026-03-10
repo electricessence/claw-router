@@ -28,7 +28,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
 
 # Serialization
-serde = { version = "1", features = ["derive", "rc"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 
@@ -61,7 +61,7 @@ native-tls = ["reqwest/native-tls"]
 rustls-tls = ["reqwest/rustls-tls"]
 # Store full request bodies in traffic log entries for debugging.
 # Requires `traffic_log_debug = true` in [gateway] config at runtime.
-debug-traffic = []
+debug-traffic = ["serde/rc"]
 
 [profile.release]
 opt-level = 3
