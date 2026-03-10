@@ -1,6 +1,6 @@
 # Security Audit Test Fixtures
 
-These files exist to validate that the Forge security audit pipeline correctly
+These files exist to validate that a security audit pipeline correctly
 identifies real security issues (true positives) and correctly clears clean code
 (true negatives).
 
