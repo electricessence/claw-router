@@ -79,7 +79,9 @@ pub(super) fn classify_and_resolve<'a>(
         let message_count = messages.map_or(0, |arr| arr.len());
 
         let classifier_input = messages.and_then(|arr| {
-            // `Some(0)` means "skip classification entirely".
+            // `Some(0)` disables the pre-flight classifier context: don't build
+            // a history window here and let routing fall back to the classifier
+            // tier directly.
             if profile.classifier_context == Some(0) {
                 return None;
             }
