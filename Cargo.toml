@@ -1,0 +1,73 @@
+[package]
+name = "lm-gateway-rs"
+version = "0.3.0"
+edition = "2021"
+description = "Minimal LLM routing gateway — single binary, no Python, works anywhere"
+license = "AGPL-3.0-only"
+repository = "https://github.com/electricessence/lm-gateway-rs"
+readme = "README.md"
+
+[[bin]]
+name = "lm-gateway"
+path = "src/main.rs"
+
+[dependencies]
+# HTTP server
+axum = { version = "0.8" }
+tower = { version = "0.5" }
+tower-http = { version = "0.6", features = ["cors", "trace", "timeout"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+
+# HTTP client (proxy to backends)
+# TLS is selected via features — see [features] below.
+# Default (dev/Windows): native-tls (uses platform TLS, no extra C deps)
+# Docker build: --no-default-features --features rustls-tls (pure Rust, static-friendly)
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+dashmap = "6"   # concurrent hashmap for in-memory traffic log
+bytes = "1"
+
+# Token estimation
+tiktoken-rs = "0.9"
+
+[features]
+# native-tls: uses the platform TLS stack (schannel on Windows, OpenSSL on Linux).
+# Enabled by default for local development — no extra C compiler requirements.
+default = ["native-tls"]
+native-tls = ["reqwest/native-tls"]
+# rustls-tls: pure-Rust TLS, no OpenSSL, fully static-link friendly.
+# Used by the production Docker build:
+#   cargo build --no-default-features --features rustls-tls
+rustls-tls = ["reqwest/rustls-tls"]
+# Store full request bodies in traffic log entries for debugging.
+# Requires `traffic_log_debug = true` in [gateway] config at runtime.
+debug-traffic = ["serde/rc"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[dev-dependencies]
+wiremock = "0.6"

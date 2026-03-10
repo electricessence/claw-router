@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>lm-gateway-rs</title>
+<style>
+  :root {
+    --bg:        #0f1117;
+    --surface:   #1a1d27;
+    --border:    #2a2d3a;
+    --text:      #e2e8f0;
+    --muted:     #64748b;
+    --green:     #22c55e;
+    --orange:    #f97316;
+    --red:       #ef4444;
+    --blue:      #3b82f6;
+    --purple:    #a78bfa;
+    --mono:      "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    --sans:      Inter, system-ui, -apple-system, sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  /* ── Layout ── */
+  #app { display: flex; flex-direction: column; height: 100vh; }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 0 20px; height: 52px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    position: sticky; top: 0; z-index: 10;
+  }
+  main { flex: 1; overflow-y: auto; padding: 20px; }
+
+  /* ── Header ── */
+  .logo { font-family: var(--mono); font-weight: 700; font-size: 15px; letter-spacing: -.3px; }
+  .logo span { color: var(--purple); }
+  .status-pill {
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border-radius: 999px;
+    font-size: 12px; font-weight: 600;
+    background: color-mix(in srgb, var(--green) 15%, transparent);
+    color: var(--green); border: 1px solid color-mix(in srgb, var(--green) 40%, transparent);
+  }
+  .status-pill.err { background: color-mix(in srgb, var(--red) 15%, transparent); color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .pulse { animation: pulse 2s ease infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .spacer { flex: 1; }
+  #last-updated { color: var(--muted); font-size: 12px; }
+
+  /* ── Section headings ── */
+  .section-title {
+    font-size: 11px; font-weight: 700; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--muted);
+    margin-bottom: 12px;
+  }
+
+  /* ── Backend cards ── */
+  #backends { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-bottom: 28px; }
+  .backend-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 8px;
+    transition: border-color .15s;
+  }
+  .backend-card:hover { border-color: var(--muted); }
+  .backend-card-row { display: flex; align-items: center; gap: 8px; }
+  .backend-name { font-family: var(--mono); font-size: 13px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .provider-badge {
+    font-family: var(--mono); font-size: 10px; font-weight: 700;
+    padding: 2px 7px; border-radius: 4px; letter-spacing: .04em;
+    background: color-mix(in srgb, var(--purple) 15%, transparent);
+    color: var(--purple); border: 1px solid color-mix(in srgb, var(--purple) 30%, transparent);
+  }
+  .provider-badge.openai   { --c: #10b981; }
+  .provider-badge.openrouter { --c: #f59e0b; }
+  .provider-badge.ollama   { --c: #38bdf8; }
+  .provider-badge.anthropic { --c: #a78bfa; }
+  .provider-badge[class*="openai"], .provider-badge[class*="openrouter"],
+  .provider-badge[class*="ollama"], .provider-badge[class*="anthropic"] {
+    background: color-mix(in srgb, var(--c) 15%, transparent);
+    color: var(--c); border-color: color-mix(in srgb, var(--c) 30%, transparent);
+  }
+  .health-dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .health-dot.ok  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .health-dot.err { background: var(--red);   box-shadow: 0 0 6px var(--red); }
+  .health-dot.unk { background: var(--muted); }
+  .backend-url { font-family: var(--mono); font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ── Stats strip ── */
+  #stats {
+    display: flex; gap: 16px; flex-wrap: wrap;
+    margin-bottom: 20px;
+  }
+  .stat-chip {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 16px;
+    display: flex; flex-direction: column; gap: 2px; min-width: 110px;
+  }
+  .stat-label { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+  .stat-value { font-family: var(--mono); font-size: 20px; font-weight: 700; }
+  .stat-value.green { color: var(--green); }
+  .stat-value.orange { color: var(--orange); }
+  .stat-value.red { color: var(--red); }
+
+  /* ── Traffic table ── */
+  #traffic-wrap {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; overflow: hidden;
+  }
+  .table-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  #traffic-table { width: 100%; border-collapse: collapse; }
+  #traffic-table th {
+    text-align: left; padding: 8px 14px;
+    font-size: 11px; font-weight: 700; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .06em;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--bg) 40%, transparent);
+  }
+  #traffic-table td {
+    padding: 9px 14px;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+    font-size: 13px;
+  }
+  #traffic-table tr:last-child td { border-bottom: none; }
+  #traffic-table tr.ok:hover   td { background: color-mix(in srgb, var(--green) 4%, transparent); }
+  #traffic-table tr.esc:hover  td { background: color-mix(in srgb, var(--orange) 4%, transparent); }
+  #traffic-table tr.err:hover  td { background: color-mix(in srgb, var(--red) 4%, transparent); }
+  .mono { font-family: var(--mono); }
+  .tag {
+    display: inline-flex; align-items: center;
+    padding: 1px 7px; border-radius: 4px;
+    font-family: var(--mono); font-size: 11px; font-weight: 600;
+  }
+  .tag.ok  { background: color-mix(in srgb, var(--green)  15%, transparent); color: var(--green); }
+  .tag.esc { background: color-mix(in srgb, var(--orange) 15%, transparent); color: var(--orange); }
+  .tag.err { background: color-mix(in srgb, var(--red)    15%, transparent); color: var(--red); }
+  .tag.dis { background: color-mix(in srgb, var(--blue)   15%, transparent); color: var(--blue); }
+  .empty-row td { text-align: center; color: var(--muted); padding: 32px; }
+
+  /* ── Config panel ── */
+  #config-overlay {
+    display: none; position: fixed; inset: 0; z-index: 20;
+    background: rgba(0,0,0,.5); backdrop-filter: blur(2px);
+  }
+  #config-overlay.open { display: block; }
+  #config-drawer {
+    position: fixed; right: 0; top: 0; bottom: 0; width: min(560px, 95vw);
+    background: var(--surface); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; z-index: 21;
+    transform: translateX(100%); transition: transform .2s ease;
+  }
+  #config-overlay.open #config-drawer { transform: none; }
+  .drawer-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px; border-bottom: 1px solid var(--border);
+    font-weight: 700; font-size: 15px;
+  }
+  #config-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 20px; line-height: 1; }
+  #config-close:hover { color: var(--text); }
+  #config-content {
+    flex: 1; overflow-y: auto; padding: 20px;
+    font-family: var(--mono); font-size: 12px; line-height: 1.7;
+    white-space: pre-wrap; color: var(--text);
+  }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+  /* ── Setup banner ── */
+  #setup-banner {
+    background: color-mix(in srgb, var(--orange) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--orange) 35%, transparent);
+    border-radius: 8px; padding: 10px 16px;
+    margin-bottom: 20px;
+    display: flex; align-items: center; gap: 10px;
+    font-size: 13px;
+  }
+  #setup-banner.hidden { display: none; }
+  #setup-banner strong { color: var(--orange); }
+
+  /* ── Backend traffic row ── */
+  .backend-traffic { font-size: 11px; color: var(--muted); min-height: 14px; font-family: var(--mono); }
+  .backend-traffic.warn { color: var(--orange); }
+  .backend-traffic.bad  { color: var(--red); }
+
+  /* ── Profile cards ── */
+  #profiles {
+    display: flex; flex-wrap: wrap; gap: 10px;
+    margin-bottom: 28px;
+  }
+  .profile-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 16px;
+    display: flex; flex-direction: column; gap: 6px;
+    min-width: 160px;
+  }
+  .profile-name { font-family: var(--mono); font-size: 13px; font-weight: 700; }
+  .profile-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .mode-badge {
+    font-family: var(--mono); font-size: 10px; font-weight: 700;
+    padding: 2px 7px; border-radius: 4px; letter-spacing: .04em;
+    background: color-mix(in srgb, var(--blue) 15%, transparent);
+    color: var(--blue); border: 1px solid color-mix(in srgb, var(--blue) 30%, transparent);
+  }
+  .mode-badge.dispatch {
+    background: color-mix(in srgb, var(--purple) 15%, transparent);
+    color: var(--purple); border-color: color-mix(in srgb, var(--purple) 30%, transparent);
+  }
+  .ratelimit-chip {
+    font-size: 11px; color: var(--muted); font-family: var(--mono);
+  }
+
+  /* ── Toast ── */
+  #toast-container {
+    position: fixed; bottom: 20px; right: 20px; z-index: 200;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  .toast {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 16px;
+    font-size: 13px; font-weight: 500;
+    box-shadow: 0 4px 16px rgba(0,0,0,.45);
+    animation: toast-in .2s ease;
+    pointer-events: auto;
+  }
+  @keyframes toast-in { from { transform: translateX(30px); opacity: 0; } }
+  .toast.ok   { border-color: var(--green); color: var(--green); }
+  .toast.err  { border-color: var(--red);   color: var(--red);   }
+
+  /* ── Buttons ── */
+  .btn {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); padding: 5px 12px; border-radius: 6px;
+    cursor: pointer; font-size: 12px; font-weight: 600;
+    transition: border-color .1s, background .1s;
+  }
+  .btn:hover { border-color: var(--muted); background: color-mix(in srgb, var(--border) 60%, transparent); }
+  .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .btn.primary:hover { background: color-mix(in srgb, var(--blue) 85%, #000); }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">lm-gateway<span>-rs</span></div>
+    <div class="status-pill" id="gw-status">
+      <div class="dot pulse"></div>
+      <span>connecting</span>
+    </div>
+    <div class="spacer"></div>
+    <span id="last-updated"></span>
+    <button class="btn" id="reload-btn" onclick="reloadConfig()">&#x21BA; Reload</button>
+    <button class="btn" onclick="openConfig()">Config</button>
+  </header>
+
+  <main>
+    <div id="setup-banner" class="hidden">
+      <span>&#x26A0;&#xFE0F;</span>
+      <span><strong>Not ready &mdash;</strong> one or more backends have unresolved API keys. Check <code>api_key_env</code> or <code>api_key_secret</code> in your config, then click <strong>&#x21BA;&nbsp;Reload</strong>.</span>
+    </div>
+    <div class="section-title">Backends</div>
+    <div id="backends"><!-- injected --></div>
+
+    <div class="section-title">Profiles</div>
+    <div id="profiles"><!-- injected --></div>
+
+    <div id="stats">
+      <div class="stat-chip">
+        <div class="stat-label">Total</div>
+        <div class="stat-value" id="s-total">—</div>
+      </div>
+      <div class="stat-chip">
+        <div class="stat-label">Errors</div>
+        <div class="stat-value" id="s-errors">—</div>
+      </div>
+      <div class="stat-chip">
+        <div class="stat-label">Avg latency</div>
+        <div class="stat-value" id="s-latency">—</div>
+      </div>
+      <div class="stat-chip">
+        <div class="stat-label">Escalations</div>
+        <div class="stat-value" id="s-escalations">—</div>
+      </div>
+    </div>
+
+    <div id="traffic-wrap">
+      <div class="table-header">
+        <div class="section-title" style="margin:0">Traffic</div>
+        <div style="font-size:11px;color:var(--muted)" id="traffic-count"></div>
+      </div>
+      <table id="traffic-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Profile</th>
+            <th>Model → Tier</th>
+            <th>Mode</th>
+            <th>Latency</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="traffic-body">
+          <tr class="empty-row"><td colspan="6">Loading traffic…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<div id="toast-container"></div>
+
+<!-- Config drawer -->
+<div id="config-overlay" onclick="maybeClose(event)">
+  <div id="config-drawer">
+    <div class="drawer-header">
+      <span>Running config</span>
+      <button id="config-close" onclick="closeConfig()">×</button>
+    </div>
+    <pre id="config-content">Loading…</pre>
+  </div>
+</div>
+
+<script>
+const BASE = '';
+let configLoaded = false;
+
+// ── Fetch helpers ────────────────────────────────────────────────────────────
+
+async function get(path) {
+  const r = await fetch(BASE + path);
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return r.json();
+}
+
+function fmt(ms) {
+  if (ms == null) return '—';
+  return ms < 1000 ? `${ms}ms` : `${(ms/1000).toFixed(1)}s`;
+}
+
+function fmtLatency(ms) {
+  if (ms == null) return '<span style="color:var(--muted)">—</span>';
+  const label = ms < 1000 ? `${ms}ms` : `${(ms/1000).toFixed(1)}s`;
+  const color = ms < 500 ? 'var(--green)' : ms < 2000 ? 'var(--orange)' : 'var(--red)';
+  return `<span class="mono" style="color:${color}">${label}</span>`;
+}
+
+function stripHint(model) {
+  if (!model) return null;
+  return model.startsWith('hint:') ? model.slice(5) : model;
+}
+
+function relTime(isoStr) {
+  if (!isoStr) return '—';
+  const d = new Date(isoStr);
+  const s = Math.round((Date.now() - d) / 1000);
+  if (s < 60)  return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s/60)}m ago`;
+  return d.toLocaleTimeString();
+}
+
+// ── Health ───────────────────────────────────────────────────────────────────
+
+async function refreshHealth() {
+  try {
+    const h = await get('/admin/health');
+    const pill = document.getElementById('gw-status');
+    pill.className = 'status-pill';
+    pill.innerHTML = '<div class="dot"></div><span>online</span>';
+    // Show setup banner when one or more backends have unresolved keys.
+    const banner = document.getElementById('setup-banner');
+    if (banner) banner.classList.toggle('hidden', h.ready !== false);
+  } catch {
+    const pill = document.getElementById('gw-status');
+    pill.className = 'status-pill err';
+    pill.innerHTML = '<div class="dot"></div><span>offline</span>';
+  }
+}
+
+// ── Backends ─────────────────────────────────────────────────────────────────
+
+async function refreshConfig() {
+  const data = await get('/admin/config');
+  const backends = data.backends || [];
+
+    document.getElementById('backends').innerHTML = backends.map(b => {
+    const provider = b.provider || 'openai';
+    return `
+      <div class="backend-card">
+        <div class="backend-card-row">
+          <div class="backend-name">${esc(b.name)}</div>
+          <span class="provider-badge ${provider}">${provider}</span>
+          <span class="health-dot unk" id="hd-${esc(b.name)}" title="Checking…"></span>
+        </div>
+        <div class="backend-card-row" style="gap:6px">
+          <div class="backend-url" style="flex:1">${esc(b.base_url)}</div>
+          ${b.has_api_key ? `<span style="font-size:11px;color:var(--muted)" title="API key: ${esc(b.api_key_source || 'env')}">🔑 <span style="font-family:var(--mono);font-size:10px">${esc(b.api_key_source || 'env')}</span></span>` : ''}
+        </div>        <div class="backend-traffic" id="bt-${esc(b.name)}"></div>      </div>`;
+  }).join('');
+
+  const profiles = data.profiles || {};
+  const profileKeys = Object.keys(profiles);
+  document.getElementById('profiles').innerHTML = profileKeys.length
+    ? profileKeys.map(name => {
+        const p = profiles[name];
+        const rpm = p.rate_limit_rpm ? `<span class="ratelimit-chip">${p.rate_limit_rpm} rpm</span>` : '';
+        return `<div class="profile-card">
+          <div class="profile-name">${esc(name)}</div>
+          <div class="profile-meta">
+            <span class="mode-badge ${p.mode === 'dispatch' ? 'dispatch' : ''}">${esc(p.mode)}</span>
+            ${rpm}
+          </div>
+          <div style="font-size:11px;color:var(--muted)">max: <span style="font-family:var(--mono)">${esc(p.max_auto_tier)}</span></div>
+        </div>`;
+      }).join('')
+    : '<span style="color:var(--muted);font-size:13px">No profiles configured.</span>';
+
+  // Probe backend health
+  try {
+    const bh = await get('/admin/backends/health');
+    (bh.backends || []).forEach(b => {
+      const dot = document.getElementById('hd-' + b.backend);
+      if (dot) {
+        dot.className = 'health-dot ' + (b.status === 'ok' ? 'ok' : 'err');
+        dot.title = b.status === 'ok' ? 'reachable' : (b.error || 'unreachable');
+      }
+      // Render traffic-based error rate if we have enough samples.
+      const trafficEl = document.getElementById('bt-' + b.backend);
+      if (trafficEl && b.traffic && b.traffic.window > 0) {
+        const t = b.traffic;
+        const pct = (t.error_rate * 100).toFixed(0);
+        const cls = t.healthy ? '' : (t.error_rate >= 0.7 ? 'bad' : 'warn');
+        trafficEl.className = 'backend-traffic' + (cls ? ' ' + cls : '');
+        trafficEl.textContent = pct + '% errors (' + t.errors + '/' + t.window + ')';
+      }
+    });
+  } catch(_) {}
+}
+
+// ── Traffic ──────────────────────────────────────────────────────────────────
+
+async function refreshTraffic() {
+  const data = await get('/admin/traffic?limit=50');
+  const stats = data.stats || {};
+  const entries = data.entries || [];
+
+  document.getElementById('s-total').textContent       = stats.total_requests ?? '—';
+  document.getElementById('s-errors').textContent      = stats.error_count ?? '0';
+  document.getElementById('s-latency').textContent     = fmt(stats.avg_latency_ms);
+  document.getElementById('s-escalations').textContent = stats.escalation_count ?? '0';
+
+  const errPct = stats.total_requests > 0 ? ((stats.error_count||0)/stats.total_requests*100).toFixed(1) : null;
+  const errEl = document.getElementById('s-errors');
+  errEl.className = 'stat-value ' + (errPct > 5 ? 'red' : errPct > 1 ? 'orange' : 'green');
+
+  document.getElementById('traffic-count').textContent = `${entries.length} recent`;
+
+  const tbody = document.getElementById('traffic-body');
+  if (!entries.length) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="6">No traffic yet</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = entries.map(e => {
+    const rowClass = e.error ? 'err' : (e.escalated ? 'esc' : 'ok');
+    const tag = e.error
+      ? `<span class="tag err" title="${esc(e.error)}">error</span>`
+      : e.escalated
+        ? `<span class="tag esc">escalated</span>`
+        : `<span class="tag ok">ok</span>`;
+    const modeTag = e.routing_mode
+      ? `<span class="tag ${e.routing_mode === 'dispatch' ? 'dis' : 'esc'}">${e.routing_mode}</span>` : '—';
+    const hint  = stripHint(e.requested_model);
+    const tier  = e.tier;
+    const modelTo = hint
+      ? `<span class="mono">${esc(hint)}</span> → <span class="mono">${esc(tier)}</span>`
+      : `<span class="mono">${esc(tier)}</span>`;
+
+    return `<tr class="${rowClass}">
+      <td class="mono" style="color:var(--muted);white-space:nowrap">${relTime(e.timestamp)}</td>
+      <td class="mono">${esc(e.profile || 'default')}</td>
+      <td>${modelTo}</td>
+      <td>${modeTag}</td>
+      <td>${fmtLatency(e.latency_ms)}</td>
+      <td>${tag}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Toast ────────────────────────────────────────────────────────────────────
+
+function showToast(msg, type) {
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = 'toast ' + (type || 'info');
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+
+// ── Reload ────────────────────────────────────────────────────────────────────
+
+async function reloadConfig() {
+  const btn = document.getElementById('reload-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Reloading…'; }
+  try {
+    const r = await fetch(BASE + '/admin/reload', { method: 'POST' });
+    if (r.ok) {
+      showToast('Config reloaded ✓  (note: rate limits, client keys & admin token require a restart)', 'ok');
+      configLoaded = false; // invalidate Config drawer cache
+      await refreshConfig();
+      await refreshHealth(); // re-evaluate ready state
+    } else {
+      const j = await r.json().catch(() => ({}));
+      showToast('Reload failed: ' + (j.error || r.statusText), 'err');
+    }
+  } catch(e) {
+    showToast('Reload error: ' + e.message, 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↺ Reload'; }
+  }
+}
+
+// ── Config drawer ────────────────────────────────────────────────────────────
+
+async function openConfig() {
+  document.getElementById('config-overlay').classList.add('open');
+  if (!configLoaded) {
+    try {
+      const c = await get('/admin/config');
+      document.getElementById('config-content').textContent = JSON.stringify(c, null, 2);
+      configLoaded = true;
+    } catch(e) {
+      document.getElementById('config-content').textContent = 'Error: ' + e.message;
+    }
+  }
+}
+
+function closeConfig() {
+  document.getElementById('config-overlay').classList.remove('open');
+}
+
+function maybeClose(e) {
+  if (e.target === document.getElementById('config-overlay')) closeConfig();
+}
+
+// ── Utils ────────────────────────────────────────────────────────────────────
+
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Poll loop ────────────────────────────────────────────────────────────────
+
+async function tick() {
+  await Promise.allSettled([refreshHealth(), refreshTraffic()]);
+  document.getElementById('last-updated').textContent =
+    'Updated ' + new Date().toLocaleTimeString();
+}
+
+// Initial load
+(async () => {
+  try { await refreshConfig(); } catch(_) {}
+  tick();
+  setInterval(tick, 4000);
+})();
+</script>
+</body>
+</html>
