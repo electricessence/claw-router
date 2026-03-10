@@ -568,7 +568,7 @@ pub async fn route_stream(
                     .unwrap_or_default()
                     .as_secs();
                 let chunk = serde_json::json!({
-                    "id": "thinking",
+                    "id": format!("chatcmpl-thinking-{ts}"),
                     "object": "chat.completion.chunk",
                     "created": ts,
                     "model": target_tier.model,
