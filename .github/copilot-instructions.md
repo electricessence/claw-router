@@ -25,7 +25,7 @@ Use environment variables. Reference env var **names**, never **values**.
 - `.env.ps1` / `.env.example.ps1` files with host aliases or container IDs
 - Any file that assumes a particular server, LXC setup, or SSH topology
 
-**Why:** This is a public, general-purpose project. Infrastructure-specific tooling leaks deployment context and does not belong here. It belongs in your private ops/infrastructure repo.
+**Why:** This is a public, general-purpose project. Infrastructure-specific tooling leaks deployment context and does not belong here. It belongs in a separate private ops/infrastructure repo.
 
 If you find yourself writing a script that contains `$SshAlias`, `$LxcId`, or any host-specific default — stop and put it in your private infrastructure repo instead.
 
@@ -103,5 +103,5 @@ See `.github/instructions/phased-commit.instructions.md` for the full procedure.
 Config files deployed to production (`etc/lm-gateway/config.toml`) must **always** originate from the repo. Never edit the live server config without the change being in the repo first.
 
 - **Stage immediately** after any config change that will be deployed — even if not ready to commit yet. This prevents accidental loss during future syncs.
-- **Deploy from repo** — `Sync-LmGateway.ps1` pushes repo files to LXC. The repo is the source of truth.
+- **Deploy from repo** — use your preferred sync mechanism (e.g. `scp`, `rsync`, or a private deploy script) to push repo files to the server. The repo is the source of truth.
 - **Profile deletion = explicit intent** — removing a profile section from the config requires a clear justification (not an accidental side-effect of a large rewrite).
