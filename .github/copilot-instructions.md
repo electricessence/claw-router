@@ -25,9 +25,9 @@ Use environment variables. Reference env var **names**, never **values**.
 - `.env.ps1` / `.env.example.ps1` files with host aliases or container IDs
 - Any file that assumes a particular server, LXC setup, or SSH topology
 
-**Why:** This is a public, general-purpose project. Infrastructure-specific tooling leaks deployment context and does not belong here. It belongs in the private `claw-agents` repo under `tools/`.
+**Why:** This is a public, general-purpose project. Infrastructure-specific tooling leaks deployment context and does not belong here. It belongs in your private ops/infrastructure repo.
 
-If you find yourself writing a script that contains `$SshAlias`, `$LxcId`, or any host-specific default — stop and put it in `claw-agents/tools/` instead.
+If you find yourself writing a script that contains `$SshAlias`, `$LxcId`, or any host-specific default — stop and put it in your private infrastructure repo instead.
 
 ---
 
@@ -53,7 +53,7 @@ Specifically forbidden in any committed file:
 - Names of private agents, services, or internal tools specific to your deployment
 - References to private repos, internal docs, or deployment-specific infrastructure
 - Example configs or profiles that are tailored to a specific private use case rather than being genuinely generic
-- Security-sensitive profiles (e.g. code auditors, access controllers) — these carry implied correctness guarantees and create liability if misused; keep them in private deployment configs
+- Security-sensitive profiles that are **deployment-specific** or purport to be authoritative (e.g. production access controllers, audit pipelines tied to a specific service) — these carry implied correctness guarantees and create liability if misused; keep them in private deployment configs. Generic illustrative examples are fine, provided they include a disclaimer that they are not production-ready.
 
 **The `etc/lm-gateway/` directory is for generic, illustrative examples only.** Any profile that exists because of a specific private deployment need must stay in a private repo. If a profile is worth making generic and truly useful to any operator, strip all private context first and treat it as a new contribution on its own merits.
 
@@ -87,20 +87,6 @@ docker build --memory=3g --build-arg CARGO_BUILD_JOBS=2 -t lm-gateway .
 ```
 
 Never exceed 2 parallel Cargo jobs in Docker. The host has limited RAM.
-
----
-
-## Script Library — Reusable `.ps1` Tools
-
-**Always create named `.ps1` scripts** for repeatable operations — never leave work as ad-hoc terminal commands. Scripts are **self-documenting**: they capture not just what ran but why, with parameters, comments, and structure that makes patterns reusable and auditable by any agent or operator.
-
-- **Naming**: `Verb-Noun.ps1` (PowerShell convention). E.g. `Deploy-GatewayConfig.ps1`, `Test-HaPrompts.ps1`.
-- **Location**: `tools/<scope>/` for persistent scripts. Temporary/one-off scripts go in `tools/temp/MMDD/description.ps1` (e.g. `tools/temp/0710/debug-gateway.ps1`) — subfolder per day, auditable, obviously ephemeral.
-- **Structure**: `#Requires -Version 7`, `[CmdletBinding()]`, comment-based help, `param()` block, `$ErrorActionPreference = 'Stop'`.
-- **Fully parameterized**: Every environment-specific value (SSH alias, LXC ID, ports, model names) must be a parameter with a sensible default. Scripts should work for different people and environments.
-- **No hardcoded secrets**: Credentials and connection details come from parameters or environment variables.
-
-Full PowerShell quality standards → `.github/instructions/powershell.instructions.md`
 
 ---
 

@@ -234,7 +234,9 @@ Guidelines:
 - If the user asks about an entity state or service call, use HA naming conventions.
 """
 
-# Code security audit profile — for reviewing source files for security issues.
+# Code security audit profile — generic illustrative example for reviewing source files.
+# NOTE: This is NOT a production-ready security auditor. It is provided as a starting point;
+# review and customize the system prompt before using it for real security decisions.
 # The caller sends file content as the user message; this profile injects the auditor
 # system prompt so clients need no prompt engineering:
 #   POST /v1/chat/completions  { model: "code-audit", messages: [{ role: "user", content: "File: ..." }] }
