@@ -33,6 +33,8 @@ use bytes::Bytes;
 use serde_json::Value;
 use tracing::debug;
 
+use futures_util::StreamExt as _;
+
 use crate::{
     api::rate_limit::RateLimiter,
     backends::{BackendClient, SseStream},
@@ -548,12 +550,70 @@ pub async fn route_stream(
 
     state.traffic.push(entry.clone());
 
+    // Experimental: thinking message — inject a synthetic prefix chunk for perceived
+    // responsiveness.  Works for streaming chat UIs; HA voice buffers the full response
+    // so the prefix gets concatenated into the spoken answer instead of rendering early.
+    let stream_response = if let Some(pool) = profile.thinking_messages.get(&target_tier_name) {
+        if let Some(msg) = pick_thinking_message(pool) {
+            let prefix = if is_native_ndjson {
+                let chunk = serde_json::json!({
+                    "model": target_tier.model,
+                    "message": { "role": "assistant", "content": format!("{msg} ") },
+                    "done": false
+                });
+                Bytes::from(format!("{chunk}\n"))
+            } else {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                // Known limitation: the synthetic prefix chunk carries a different `id`
+                // than the backend stream chunks that follow. The OpenAI spec requires all
+                // chunks in a completion to share the same `id`; most clients tolerate the
+                // mismatch, but strict implementations may treat them as separate completions.
+                let chunk = serde_json::json!({
+                    "id": format!("chatcmpl-thinking-{ts}"),
+                    "object": "chat.completion.chunk",
+                    "created": ts,
+                    "model": target_tier.model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": { "role": "assistant", "content": format!("{msg} ") },
+                        "finish_reason": null
+                    }]
+                });
+                Bytes::from(format!("data: {chunk}\n\n"))
+            };
+            let prefix_stream = futures_util::stream::once(async move { Ok(prefix) });
+            Box::pin(prefix_stream.chain(stream_response)) as SseStream
+        } else {
+            stream_response
+        }
+    } else {
+        stream_response
+    };
+
     Ok((stream_response, entry, is_native_ndjson))
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Pick a pseudo-random thinking message from the pool.
+///
+/// Uses nanosecond timestamp instead of a full RNG crate — good enough for
+/// UI variety, not for cryptography.
+fn pick_thinking_message(pool: &[String]) -> Option<&str> {
+    if pool.is_empty() {
+        return None;
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as usize;
+    Some(&pool[nanos % pool.len()])
+}
 
 /// Default message returned by reply-mode profiles when no custom message is set.
 const DEFAULT_REPLY_MESSAGE: &str =
@@ -640,6 +700,30 @@ mod tests {
 
     use self::classify::{parse_classification, parse_classification_label, resolve_tier_by_label};
     use self::modes::is_sufficient;
+
+    // -----------------------------------------------------------------------
+    // pick_thinking_message — pure helper, no I/O
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pick_thinking_message_empty_pool_returns_none() {
+        assert!(pick_thinking_message(&[]).is_none());
+    }
+
+    #[test]
+    fn pick_thinking_message_single_element_always_returns_it() {
+        let pool = vec!["Thinking…".to_owned()];
+        for _ in 0..10 {
+            assert_eq!(pick_thinking_message(&pool), Some("Thinking…"));
+        }
+    }
+
+    #[test]
+    fn pick_thinking_message_multiple_elements_stays_in_bounds() {
+        let pool = vec!["A".to_owned(), "B".to_owned(), "C".to_owned()];
+        let msg = pick_thinking_message(&pool).expect("should return Some");
+        assert!(pool.contains(&msg.to_owned()), "returned message not in pool: {msg}");
+    }
 
     // -----------------------------------------------------------------------
     // is_sufficient — pure heuristic, no I/O required
