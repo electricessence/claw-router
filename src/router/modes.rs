@@ -78,6 +78,14 @@ pub(super) fn classify_and_resolve<'a>(
         let messages = body.pointer("/messages").and_then(Value::as_array);
         let message_count = messages.map_or(0, |arr| arr.len());
 
+        // Compute candidates early so the bypass path can apply context-window gating.
+        let max_idx = config
+            .tiers
+            .iter()
+            .position(|t| t.name == profile.max_auto_tier)
+            .unwrap_or(config.tiers.len().saturating_sub(1));
+        let candidates: &[TierConfig] = &config.tiers[..=max_idx];
+
         let classifier_input = messages.and_then(|arr| {
             // `Some(0)` disables the pre-flight classifier context: don't build
             // a history window here and let routing fall back to the classifier
@@ -86,13 +94,38 @@ pub(super) fn classify_and_resolve<'a>(
                 return None;
             }
 
+            // Extract the text from a message's `content` field.
+            // Handles both plain string content and OpenAI-style multimodal
+            // array-of-parts (e.g. `[{type:"text", text:"..."}, ...]`).
+            // Non-text parts (images, audio) are skipped.
+            let extract_text = |m: &Value| -> Option<String> {
+                match m.get("content")? {
+                    Value::String(s) => Some(s.clone()),
+                    Value::Array(parts) => {
+                        let text: String = parts
+                            .iter()
+                            .filter_map(|p| {
+                                if p.get("type").and_then(Value::as_str) == Some("text") {
+                                    p.get("text").and_then(Value::as_str).map(str::to_owned)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        if text.is_empty() { None } else { Some(text) }
+                    }
+                    _ => None,
+                }
+            };
+
             // Build the window: filter user/assistant text messages, optionally
             // capped to the last N. Walk from the end when bounded to avoid
             // scanning the full history for small contexts (e.g. 1–4 messages).
-            let window: Vec<(&str, &str)> = match profile.classifier_context {
+            let window: Vec<(&str, String)> = match profile.classifier_context {
                 Some(n) => {
                     let n = n as usize;
-                    let mut w: Vec<(&str, &str)> = arr
+                    let mut w: Vec<(&str, String)> = arr
                         .iter()
                         .rev()
                         .filter_map(|m| {
@@ -100,7 +133,7 @@ pub(super) fn classify_and_resolve<'a>(
                             if role != "user" && role != "assistant" {
                                 return None;
                             }
-                            let content = m.get("content").and_then(Value::as_str)?;
+                            let content = extract_text(m)?;
                             Some((role, content))
                         })
                         .take(n)
@@ -115,7 +148,7 @@ pub(super) fn classify_and_resolve<'a>(
                         if role != "user" && role != "assistant" {
                             return None;
                         }
-                        let content = m.get("content").and_then(Value::as_str)?;
+                        let content = extract_text(m)?;
                         Some((role, content))
                     })
                     .collect(),
@@ -133,7 +166,7 @@ pub(super) fn classify_and_resolve<'a>(
 
             // Single message (common case): return it as-is.
             if window.len() == 1 {
-                return Some(window[0].1.to_owned());
+                return Some(window.into_iter().next().unwrap().1);
             }
 
             // Multi-message: format as a labelled conversation block.
@@ -150,9 +183,23 @@ pub(super) fn classify_and_resolve<'a>(
         });
 
         let Some(classifier_input) = classifier_input else {
-            debug!(profile = %profile_name, "classifier input unavailable — bypassing classification");
+            // Apply context-window gating even on the bypass path so oversized
+            // requests don't land on a tier that can't fit them.
+            let estimated_tokens = super::estimate_request_tokens(body);
+            let classifier_idx = candidates
+                .iter()
+                .position(|t| t.name == classifier_tier.name)
+                .unwrap_or(0);
+            let min_idx = super::find_min_tier_for_tokens(candidates, estimated_tokens, classifier_idx);
+            let bypass_tier_name = candidates[min_idx].name.clone();
+            debug!(
+                profile = %profile_name,
+                estimated_tokens,
+                tier = %bypass_tier_name,
+                "classifier input unavailable — bypassing classification (context-window gating applied)"
+            );
             return Ok(RoutingResolution {
-                tier_name: classifier_tier.name.clone(),
+                tier_name: bypass_tier_name,
                 think_override: None,
                 class_label: String::new(), // no classification performed — skip class_prompts
                 profile_chain: visited,
@@ -170,13 +217,6 @@ pub(super) fn classify_and_resolve<'a>(
             .classifier_prompt
             .as_deref()
             .unwrap_or(DEFAULT_CLASSIFIER_PROMPT);
-
-        let max_idx = config
-            .tiers
-            .iter()
-            .position(|t| t.name == profile.max_auto_tier)
-            .unwrap_or(config.tiers.len().saturating_sub(1));
-        let candidates: &[TierConfig] = &config.tiers[..=max_idx];
 
         let classifier_think = profile.classifier_think.unwrap_or(false);
         let classifier_body = serde_json::json!({
